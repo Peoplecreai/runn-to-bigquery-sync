@@ -16,4 +16,4 @@ RUN pip install --no-cache-dir -r requirements.txt
 COPY runn_sync.py .
 
 # Define el comando por defecto que se ejecutará cuando el contenedor arranque
-CMD [ "python3", "runn_sync.py" ]
+CMD [ "python3", "runn_sync.py", "--serve" ]

@@ -1,7 +1,21 @@
 from __future__ import annotations
-import os, argparse, datetime as dt, time, json, requests
-from typing import Dict, List, Tuple, Optional, Union
+
+import argparse
+import datetime as dt
+import json
+import logging
+import os
+import sys
+import time
+from typing import Any, Dict, List, Optional, Tuple, Union
+
+import requests
+from flask import Flask, jsonify, request
 from google.cloud import bigquery
+
+
+logging.basicConfig(level=os.environ.get("LOG_LEVEL", "INFO").upper())
+logger = logging.getLogger(__name__)
 
 # -----------------------
 # Config HTTP / Entorno
@@ -389,22 +403,34 @@ def parse_only(raw: Optional[List[str]]) -> Optional[List[str]]:
             seen.add(k); ordered.append(k)
     return ordered
 
-# -----------------------
-# MAIN
-# -----------------------
-def main():
-    ap = argparse.ArgumentParser()
-    ap.add_argument("--mode", choices=["full","delta"], default="delta")
+
+def build_parser(*, exit_on_error: bool = True) -> argparse.ArgumentParser:
+    ap = argparse.ArgumentParser(
+        description="Sync Runn data into BigQuery",
+        exit_on_error=exit_on_error,
+    )
+    ap.add_argument("--mode", choices=["full", "delta"], default="delta")
     ap.add_argument("--delta-days", type=int, default=90)
-    ap.add_argument("--overlap-days", type=int, default=7, help="relee últimos N días en delta")
-    ap.add_argument("--only", action="append", help="repetible o coma-separado: runn_people,runn_projects,…")
+    ap.add_argument(
+        "--overlap-days",
+        type=int,
+        default=7,
+        help="relee últimos N días en delta",
+    )
+    ap.add_argument(
+        "--only",
+        action="append",
+        help="repetible o coma-separado: runn_people,runn_projects,…",
+    )
 
     # Backfill dirigido (rango global por fechas; persona opcional, NO hardcode)
     ap.add_argument("--range-from", dest="range_from", help="YYYY-MM-DD")
-    ap.add_argument("--range-to",   dest="range_to",   help="YYYY-MM-DD")
-    ap.add_argument("--person-id",  dest="person_id",  help="filtrar por persona (opcional)")
+    ap.add_argument("--range-to", dest="range_to", help="YYYY-MM-DD")
+    ap.add_argument("--person-id", dest="person_id", help="filtrar por persona (opcional)")
+    return ap
 
-    args = ap.parse_args()
+
+def run_sync(args: argparse.Namespace) -> Dict[str, Any]:
     only_list = parse_only(args.only)
 
     bq = bigquery.Client(project=PROJ)
@@ -417,7 +443,7 @@ def main():
     if RUNN_HOLIDAY_GROUP_ID:
         collections["runn_timeoffs_holidays"] = (
             "/time-offs/holidays/",
-            {"holidayGroupId": RUNN_HOLIDAY_GROUP_ID}
+            {"holidayGroupId": RUNN_HOLIDAY_GROUP_ID},
         )
 
     targets = collections if not only_list else {k: collections[k] for k in only_list if k in collections}
@@ -436,7 +462,7 @@ def main():
         if _accepts_date_window(path):
             if args.range_from and args.range_to:
                 dyn_params["dateFrom"] = args.range_from
-                dyn_params["dateTo"]   = args.range_to
+                dyn_params["dateTo"] = args.range_to
                 purge_from, purge_to = args.range_from, args.range_to
             if args.person_id:
                 dyn_params["personId"] = args.person_id
@@ -449,7 +475,7 @@ def main():
                 dyn_params.setdefault("dateFrom", start_date)
                 dyn_params.setdefault("dateTo", end_date)
                 purge_from = dyn_params.get("dateFrom")
-                purge_to   = dyn_params.get("dateTo")
+                purge_to = dyn_params.get("dateTo")
 
         extra = dict(fixed_params or {})
         extra.update({k: v for k, v in dyn_params.items() if v})
@@ -488,7 +514,7 @@ def main():
                 v = r.get("updatedAt") or r.get("updated_at")
                 if v:
                     try:
-                        t = dt.datetime.fromisoformat(v.replace("Z","+00:00"))
+                        t = dt.datetime.fromisoformat(v.replace("Z", "+00:00"))
                         max_upd = t if (max_upd is None or t > max_upd) else max_upd
                     except Exception:
                         pass
@@ -498,7 +524,108 @@ def main():
             set_last_success(bq, tbl, new_checkpoint)
         # si no hubo filas en delta, no movemos el checkpoint (conservador)
 
-    print(json.dumps({"ok": True, "loaded": summary}, ensure_ascii=False))
+    logger.info("Sync completado: %s", summary)
+    return {"ok": True, "loaded": summary}
+
+
+def _request_args(req) -> argparse.Namespace:
+    parser = build_parser(exit_on_error=False)
+    payload = req.get_json(silent=True) or {}
+
+    def _value_list(name: str) -> List[str]:
+        values: List[str] = []
+        alt = name.replace("_", "-")
+        for key in {name, alt}:
+            if isinstance(payload, dict) and key in payload:
+                raw_val = payload[key]
+                if isinstance(raw_val, list):
+                    values.extend([str(v) for v in raw_val if v not in (None, "")])
+                elif raw_val not in (None, ""):
+                    values.append(str(raw_val))
+            if req.args.getlist(key):
+                values.extend([v for v in req.args.getlist(key) if v not in (None, "")])
+        return values
+
+    def _single(name: str) -> Optional[str]:
+        vals = _value_list(name)
+        return vals[0] if vals else None
+
+    argv: List[str] = []
+
+    if (mode := _single("mode")) is not None:
+        argv.extend(["--mode", mode])
+
+    for key, flag in (("delta_days", "--delta-days"), ("overlap_days", "--overlap-days")):
+        val = _single(key)
+        if val is not None:
+            argv.extend([flag, val])
+
+    for entry in _value_list("only"):
+        argv.extend(["--only", entry])
+
+    for key, flag in (("range_from", "--range-from"), ("range_to", "--range-to"), ("person_id", "--person-id")):
+        val = _single(key)
+        if val is not None:
+            argv.extend([flag, val])
+
+    try:
+        return parser.parse_args(argv)
+    except (argparse.ArgumentError, SystemExit) as exc:
+        message = str(exc) or "invalid parameters"
+        raise ValueError(message) from exc
+
+
+def create_app() -> Flask:
+    app = Flask(__name__)
+
+    @app.get("/healthz")
+    def health() -> Any:
+        return jsonify({"ok": True})
+
+    @app.route("/run", methods=["GET", "POST"])
+    def trigger() -> Any:
+        try:
+            args = _request_args(request)
+        except ValueError as exc:
+            return jsonify({"ok": False, "error": str(exc)}), 400
+
+        try:
+            result = run_sync(args)
+        except Exception as exc:  # pragma: no cover - defensive logging
+            logger.exception("Fallo al ejecutar la sincronización")
+            return jsonify({"ok": False, "error": str(exc)}), 500
+
+        return jsonify(result)
+
+    @app.get("/")
+    def root() -> Any:
+        return jsonify({"ok": True, "message": "runn sync listo"})
+
+    return app
+
+
+APP = create_app()
+
+
+def serve() -> None:
+    port = int(os.environ.get("PORT", "8080"))
+    logger.info("Iniciando servidor HTTP en el puerto %s", port)
+    APP.run(host="0.0.0.0", port=port)
+
+
+def main(argv: Optional[List[str]] = None) -> Dict[str, Any]:
+    parser = build_parser()
+    args = parser.parse_args(argv)
+    result = run_sync(args)
+    print(json.dumps(result, ensure_ascii=False))
+    return result
+
 
 if __name__ == "__main__":
-    main()
+    if "--serve" in sys.argv:
+        sys.argv.remove("--serve")
+        serve()
+    elif os.environ.get("RUNN_SYNC_SERVER", "").lower() in {"1", "true", "yes"}:
+        serve()
+    else:
+        main()

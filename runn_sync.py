@@ -30,7 +30,7 @@ PROJ = os.environ["BQ_PROJECT"]
 # =============================================================================
 # CAMBIO FORZADO: Ignoramos la variable de entorno y usamos el valor correcto.
 # =============================================================================
-DS   = "people_analytics" 
+DS = os.environ.get("BQ_DATASET", "people_analytics") 
 
 # Imprimimos los valores para estar 100% seguros de lo que se está usando
 print(f"DEBUG: Usando proyecto BQ '{PROJ}' y dataset '{DS}'")

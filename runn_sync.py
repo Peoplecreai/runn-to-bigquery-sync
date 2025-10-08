@@ -1,29 +1,69 @@
 from __future__ import annotations
-import os, argparse, datetime as dt, time, json, requests
-from typing import Dict, List, Tuple, Optional, Union
+
+import argparse
+import datetime as dt
+import json
+import logging
+import os
+import sys
+import time
+from dataclasses import dataclass
+from typing import Any, Dict, List, Optional, Tuple, Union
+
+import requests
+from flask import Flask, jsonify, request
 from google.cloud import bigquery
 
-# -----------------------
-# Config HTTP / Entorno
-# -----------------------
-API = "https://api.runn.io"
-HDRS = {
-    "Authorization": f"Bearer {os.environ['RUNN_API_TOKEN']}",
-    "Accept-Version": "1.0.0",
-    "Accept": "application/json",
-}
-PROJ = os.environ["BQ_PROJECT"]
-# =============================================================================
-# CAMBIO FORZADO: Ignoramos la variable de entorno y usamos el valor correcto.
-# =============================================================================
-DS   = "people_analytics" 
 
-# Imprimimos los valores para estar 100% seguros de lo que se está usando
-print(f"DEBUG: Usando proyecto BQ '{PROJ}' y dataset '{DS}'")
-# =============================================================================
+logging.basicConfig(level=os.environ.get("LOG_LEVEL", "INFO").upper())
+logger = logging.getLogger(__name__)
 
-# Filtro opcional para holidays (si lo defines en el Job limitará el volumen)
-RUNN_HOLIDAY_GROUP_ID = os.environ.get("RUNN_HOLIDAY_GROUP_ID")
+
+@dataclass
+class Config:
+    api_base: str
+    api_token: str
+    bq_project: str
+    bq_dataset: str
+    holiday_group_id: Optional[str]
+
+    @property
+    def headers(self) -> Dict[str, str]:
+        return {
+            "Authorization": f"Bearer {self.api_token}",
+            "Accept-Version": "1.0.0",
+            "Accept": "application/json",
+        }
+
+
+_CONFIG: Optional[Config] = None
+
+
+def get_config() -> Config:
+    global _CONFIG
+    if _CONFIG is None:
+        token = os.environ.get("RUNN_API_TOKEN")
+        if not token:
+            raise RuntimeError("Missing RUNN_API_TOKEN environment variable")
+        project = os.environ.get("BQ_PROJECT")
+        if not project:
+            raise RuntimeError("Missing BQ_PROJECT environment variable")
+        dataset = os.environ.get("BQ_DATASET", "people_analytics")
+        base = os.environ.get("RUNN_API", "https://api.runn.io").rstrip("/")
+        holiday_group = os.environ.get("RUNN_HOLIDAY_GROUP_ID")
+        _CONFIG = Config(
+            api_base=base,
+            api_token=token,
+            bq_project=project,
+            bq_dataset=dataset,
+            holiday_group_id=holiday_group,
+        )
+        logger.info(
+            "Configuración cargada para proyecto %s y dataset %s",
+            project,
+            dataset,
+        )
+    return _CONFIG
 
 # -----------------------------------------------------------------------------
 # Catálogo de colecciones.
@@ -99,20 +139,25 @@ SCHEMA_OVERRIDES: Dict[str, List[bigquery.SchemaField]] = {
 # -----------------------
 # Estado de sync en BQ
 # -----------------------
-def state_table() -> str:
-    return f"{PROJ}.{DS}.__runn_sync_state"
+def state_table(cfg: Optional[Config] = None) -> str:
+    cfg = cfg or get_config()
+    return f"{cfg.bq_project}.{cfg.bq_dataset}.__runn_sync_state"
 
-def ensure_state_table(bq: bigquery.Client):
+def ensure_state_table(bq: bigquery.Client, cfg: Optional[Config] = None):
+    cfg = cfg or get_config()
     bq.query(f"""
-    CREATE TABLE IF NOT EXISTS `{state_table()}`(
+    CREATE TABLE IF NOT EXISTS `{state_table(cfg)}`(
       table_name STRING NOT NULL,
       last_success TIMESTAMP,
       PRIMARY KEY(table_name) NOT ENFORCED
     )""").result()
 
-def get_last_success(bq: bigquery.Client, name: str) -> Optional[dt.datetime]:
+def get_last_success(
+    bq: bigquery.Client, name: str, cfg: Optional[Config] = None
+) -> Optional[dt.datetime]:
+    cfg = cfg or get_config()
     q = bq.query(
-        f"SELECT last_success FROM `{state_table()}` WHERE table_name=@t",
+        f"SELECT last_success FROM `{state_table(cfg)}` WHERE table_name=@t",
         job_config=bigquery.QueryJobConfig(
             query_parameters=[bigquery.ScalarQueryParameter("t", "STRING", name)]
         ),
@@ -121,10 +166,13 @@ def get_last_success(bq: bigquery.Client, name: str) -> Optional[dt.datetime]:
         return r[0]
     return None
 
-def set_last_success(bq: bigquery.Client, name: str, ts: dt.datetime):
+def set_last_success(
+    bq: bigquery.Client, name: str, ts: dt.datetime, cfg: Optional[Config] = None
+):
+    cfg = cfg or get_config()
     bq.query(
       f"""
-      MERGE `{state_table()}` T
+      MERGE `{state_table(cfg)}` T
       USING (SELECT @t AS table_name, @ts AS last_success) S
       ON T.table_name=S.table_name
       WHEN MATCHED THEN UPDATE SET last_success=S.last_success
@@ -156,7 +204,11 @@ def fetch_all(path: str,
               since_iso: Optional[str],
               limit=200,
               extra_params: Optional[Dict[str,str]]=None) -> List[Dict]:
-    s = requests.Session(); s.headers.update(HDRS)
+    cfg = get_config()
+    base_url = cfg.api_base
+    url = f"{base_url}{path}"
+    s = requests.Session()
+    s.headers.update(cfg.headers)
     out: List[Dict] = []
     cursor: Optional[str] = None
 
@@ -169,13 +221,13 @@ def fetch_all(path: str,
         if cursor:
             params["cursor"] = cursor
 
-        r = s.get(API + path, params=params, timeout=60)
+        r = s.get(url, params=params, timeout=60)
         if r.status_code == 429:
             time.sleep(int(r.headers.get("Retry-After", "5") or "5"))
             continue
         if r.status_code == 404:
             if os.environ.get("RUNN_DEBUG"):
-                print(f"[WARN] 404 Not Found: {API+path} params={params}  (ignorado)")
+                print(f"[WARN] 404 Not Found: {url} params={params}  (ignorado)")
             return []
         r.raise_for_status()
 
@@ -196,10 +248,13 @@ def fetch_all(path: str,
 # -----------------------
 # BQ: helpers
 # -----------------------
-def _create_empty_timeoff_table_if_needed(table_base: str, bq: bigquery.Client) -> None:
+def _create_empty_timeoff_table_if_needed(
+    table_base: str, bq: bigquery.Client, cfg: Optional[Config] = None
+) -> None:
+    cfg = cfg or get_config()
     if table_base not in {"runn_timeoffs_leave", "runn_timeoffs_rostered"}:
         return
-    tgt = f"{PROJ}.{DS}.{table_base}"
+    tgt = f"{cfg.bq_project}.{cfg.bq_dataset}.{table_base}"
     try:
         bq.get_table(tgt)
         return
@@ -233,12 +288,18 @@ def _cast_expr(col: str, bq_type: str) -> str:
     # por defecto sin cast
     return f"{col} AS {col}"
 
-def _ensure_target_table(table_base: str, stg_schema: List[bigquery.SchemaField], bq: bigquery.Client) -> List[bigquery.SchemaField]:
+def _ensure_target_table(
+    table_base: str,
+    stg_schema: List[bigquery.SchemaField],
+    bq: bigquery.Client,
+    cfg: Optional[Config] = None,
+) -> List[bigquery.SchemaField]:
     """
     Crea la tabla destino si no existe. Si hay override conocido, úsalo.
     Devuelve el schema efectivo de destino.
     """
-    tgt_id = f"{PROJ}.{DS}.{table_base}"
+    cfg = cfg or get_config()
+    tgt_id = f"{cfg.bq_project}.{cfg.bq_dataset}.{table_base}"
     try:
         tgt_tbl = bq.get_table(tgt_id)
         return tgt_tbl.schema
@@ -250,11 +311,12 @@ def _ensure_target_table(table_base: str, stg_schema: List[bigquery.SchemaField]
         # particiona si hay columna date
         has_date = any(c.name == "date" and c.field_type.upper()=="DATE" for c in schema)
         if has_date:
+            stg_id = f"{cfg.bq_project}.{cfg.bq_dataset}._stg__{table_base}"
             q = f"""
             CREATE TABLE `{tgt_id}`
             PARTITION BY DATE(date)
             CLUSTER BY personId, projectId
-            AS SELECT * FROM `{PROJ}.{DS}._stg__{table_base}` WHERE 1=0
+            AS SELECT * FROM `{stg_id}` WHERE 1=0
             """
             # Creamos con DDL; luego ajustamos el esquema por exactitud
             bq.query(q).result()
@@ -272,13 +334,16 @@ def _ensure_target_table(table_base: str, stg_schema: List[bigquery.SchemaField]
 # -----------------------
 # Carga y MERGE a BQ (tipado contra destino)
 # -----------------------
-def load_merge(table_base: str, rows: List[Dict], bq: bigquery.Client) -> int:
+def load_merge(
+    table_base: str, rows: List[Dict], bq: bigquery.Client, cfg: Optional[Config] = None
+) -> int:
+    cfg = cfg or get_config()
     if not rows:
-        _create_empty_timeoff_table_if_needed(table_base, bq)
+        _create_empty_timeoff_table_if_needed(table_base, bq, cfg)
         return 0
 
-    stg = f"{PROJ}.{DS}._stg__{table_base}"
-    tgt = f"{PROJ}.{DS}.{table_base}"
+    stg = f"{cfg.bq_project}.{cfg.bq_dataset}._stg__{table_base}"
+    tgt = f"{cfg.bq_project}.{cfg.bq_dataset}.{table_base}"
 
     # 1) Carga staging
     job = bq.load_table_from_json(
@@ -293,7 +358,7 @@ def load_merge(table_base: str, rows: List[Dict], bq: bigquery.Client) -> int:
 
     stg_schema = bq.get_table(stg).schema
     # 2) Asegura destino (usa overrides si hay)
-    tgt_schema = _ensure_target_table(table_base, stg_schema, bq)
+    tgt_schema = _ensure_target_table(table_base, stg_schema, bq, cfg)
 
     # 3) Construye SELECT tipado (S) para alinear a esquema destino
     tgt_map = _schema_to_map(tgt_schema)
@@ -342,11 +407,15 @@ def load_merge(table_base: str, rows: List[Dict], bq: bigquery.Client) -> int:
 # -----------------------
 # Purga de ventana (para backfill por rango – sin personas hardcode)
 # -----------------------
-def purge_scope(bq: bigquery.Client,
-                table_base: str,
-                person: Optional[str],
-                dfrom: Optional[str],
-                dto: Optional[str]) -> None:
+def purge_scope(
+    bq: bigquery.Client,
+    table_base: str,
+    person: Optional[str],
+    dfrom: Optional[str],
+    dto: Optional[str],
+    cfg: Optional[Config] = None,
+) -> None:
+    cfg = cfg or get_config()
     if not (dfrom and dto):
         return
     if table_base not in {"runn_actuals", "runn_assignments"}:
@@ -354,7 +423,7 @@ def purge_scope(bq: bigquery.Client,
 
     if person:
         q = f"""
-        DELETE FROM `{PROJ}.{DS}.{table_base}`
+        DELETE FROM `{cfg.bq_project}.{cfg.bq_dataset}.{table_base}`
         WHERE CAST(personId AS STRING)=@p
           AND DATE(date) BETWEEN @d1 AND @d2
         """
@@ -365,7 +434,7 @@ def purge_scope(bq: bigquery.Client,
         ]
     else:
         q = f"""
-        DELETE FROM `{PROJ}.{DS}.{table_base}`
+        DELETE FROM `{cfg.bq_project}.{cfg.bq_dataset}.{table_base}`
         WHERE DATE(date) BETWEEN @d1 AND @d2
         """
         params = [
@@ -389,35 +458,49 @@ def parse_only(raw: Optional[List[str]]) -> Optional[List[str]]:
             seen.add(k); ordered.append(k)
     return ordered
 
-# -----------------------
-# MAIN
-# -----------------------
-def main():
-    ap = argparse.ArgumentParser()
-    ap.add_argument("--mode", choices=["full","delta"], default="delta")
+
+def build_parser(*, exit_on_error: bool = True) -> argparse.ArgumentParser:
+    ap = argparse.ArgumentParser(
+        description="Sync Runn data into BigQuery",
+        exit_on_error=exit_on_error,
+    )
+    ap.add_argument("--mode", choices=["full", "delta"], default="delta")
     ap.add_argument("--delta-days", type=int, default=90)
-    ap.add_argument("--overlap-days", type=int, default=7, help="relee últimos N días en delta")
-    ap.add_argument("--only", action="append", help="repetible o coma-separado: runn_people,runn_projects,…")
+    ap.add_argument(
+        "--overlap-days",
+        type=int,
+        default=7,
+        help="relee últimos N días en delta",
+    )
+    ap.add_argument(
+        "--only",
+        action="append",
+        help="repetible o coma-separado: runn_people,runn_projects,…",
+    )
 
     # Backfill dirigido (rango global por fechas; persona opcional, NO hardcode)
     ap.add_argument("--range-from", dest="range_from", help="YYYY-MM-DD")
-    ap.add_argument("--range-to",   dest="range_to",   help="YYYY-MM-DD")
-    ap.add_argument("--person-id",  dest="person_id",  help="filtrar por persona (opcional)")
+    ap.add_argument("--range-to", dest="range_to", help="YYYY-MM-DD")
+    ap.add_argument("--person-id", dest="person_id", help="filtrar por persona (opcional)")
+    return ap
 
-    args = ap.parse_args()
+
+def run_sync(args: argparse.Namespace) -> Dict[str, Any]:
     only_list = parse_only(args.only)
 
-    bq = bigquery.Client(project=PROJ)
-    ensure_state_table(bq)
+    cfg = get_config()
+
+    bq = bigquery.Client(project=cfg.bq_project)
+    ensure_state_table(bq, cfg)
 
     now = dt.datetime.now(dt.timezone.utc)
 
     # Filtro de holiday group, si aplica
     collections: Dict[str, Union[str, Tuple[str, Dict[str, str]]]] = dict(COLLS)
-    if RUNN_HOLIDAY_GROUP_ID:
+    if cfg.holiday_group_id:
         collections["runn_timeoffs_holidays"] = (
             "/time-offs/holidays/",
-            {"holidayGroupId": RUNN_HOLIDAY_GROUP_ID}
+            {"holidayGroupId": cfg.holiday_group_id},
         )
 
     targets = collections if not only_list else {k: collections[k] for k in only_list if k in collections}
@@ -426,7 +509,7 @@ def main():
     for tbl, spec in targets.items():
         path, fixed_params = (spec if isinstance(spec, tuple) else (spec, None))
 
-        last_checkpoint = get_last_success(bq, tbl)
+        last_checkpoint = get_last_success(bq, tbl, cfg)
 
         # ----- Parámetros dinámicos (fecha/persona, sin hardcodeos) -----
         dyn_params: Dict[str, Optional[str]] = {}
@@ -436,7 +519,7 @@ def main():
         if _accepts_date_window(path):
             if args.range_from and args.range_to:
                 dyn_params["dateFrom"] = args.range_from
-                dyn_params["dateTo"]   = args.range_to
+                dyn_params["dateTo"] = args.range_to
                 purge_from, purge_to = args.range_from, args.range_to
             if args.person_id:
                 dyn_params["personId"] = args.person_id
@@ -449,7 +532,7 @@ def main():
                 dyn_params.setdefault("dateFrom", start_date)
                 dyn_params.setdefault("dateTo", end_date)
                 purge_from = dyn_params.get("dateFrom")
-                purge_to   = dyn_params.get("dateTo")
+                purge_to = dyn_params.get("dateTo")
 
         extra = dict(fixed_params or {})
         extra.update({k: v for k, v in dyn_params.items() if v})
@@ -472,13 +555,13 @@ def main():
 
         # ----- Purga de ventana (si procede) -----
         if tbl in {"runn_actuals", "runn_assignments"} and purge_from and purge_to:
-            purge_scope(bq, tbl, args.person_id, purge_from, purge_to)
+            purge_scope(bq, tbl, args.person_id, purge_from, purge_to, cfg)
 
         # ----- Descarga -----
         rows = fetch_all(path, since_iso if use_modified_after else None, extra_params=extra)
 
         # ----- Carga/MERGE -----
-        n = load_merge(tbl, rows, bq)
+        n = load_merge(tbl, rows, bq, cfg)
         summary[tbl] = int(n)
 
         # ----- Checkpoint -----
@@ -488,17 +571,118 @@ def main():
                 v = r.get("updatedAt") or r.get("updated_at")
                 if v:
                     try:
-                        t = dt.datetime.fromisoformat(v.replace("Z","+00:00"))
+                        t = dt.datetime.fromisoformat(v.replace("Z", "+00:00"))
                         max_upd = t if (max_upd is None or t > max_upd) else max_upd
                     except Exception:
                         pass
             new_checkpoint = max_upd or now
             if last_checkpoint and new_checkpoint < last_checkpoint:
                 new_checkpoint = last_checkpoint
-            set_last_success(bq, tbl, new_checkpoint)
+            set_last_success(bq, tbl, new_checkpoint, cfg)
         # si no hubo filas en delta, no movemos el checkpoint (conservador)
 
-    print(json.dumps({"ok": True, "loaded": summary}, ensure_ascii=False))
+    logger.info("Sync completado: %s", summary)
+    return {"ok": True, "loaded": summary}
+
+
+def _request_args(req) -> argparse.Namespace:
+    parser = build_parser(exit_on_error=False)
+    payload = req.get_json(silent=True) or {}
+
+    def _value_list(name: str) -> List[str]:
+        values: List[str] = []
+        alt = name.replace("_", "-")
+        for key in {name, alt}:
+            if isinstance(payload, dict) and key in payload:
+                raw_val = payload[key]
+                if isinstance(raw_val, list):
+                    values.extend([str(v) for v in raw_val if v not in (None, "")])
+                elif raw_val not in (None, ""):
+                    values.append(str(raw_val))
+            if req.args.getlist(key):
+                values.extend([v for v in req.args.getlist(key) if v not in (None, "")])
+        return values
+
+    def _single(name: str) -> Optional[str]:
+        vals = _value_list(name)
+        return vals[0] if vals else None
+
+    argv: List[str] = []
+
+    if (mode := _single("mode")) is not None:
+        argv.extend(["--mode", mode])
+
+    for key, flag in (("delta_days", "--delta-days"), ("overlap_days", "--overlap-days")):
+        val = _single(key)
+        if val is not None:
+            argv.extend([flag, val])
+
+    for entry in _value_list("only"):
+        argv.extend(["--only", entry])
+
+    for key, flag in (("range_from", "--range-from"), ("range_to", "--range-to"), ("person_id", "--person-id")):
+        val = _single(key)
+        if val is not None:
+            argv.extend([flag, val])
+
+    try:
+        return parser.parse_args(argv)
+    except (argparse.ArgumentError, SystemExit) as exc:
+        message = str(exc) or "invalid parameters"
+        raise ValueError(message) from exc
+
+
+def create_app() -> Flask:
+    app = Flask(__name__)
+
+    @app.get("/healthz")
+    def health() -> Any:
+        return jsonify({"ok": True})
+
+    @app.route("/run", methods=["GET", "POST"])
+    def trigger() -> Any:
+        try:
+            args = _request_args(request)
+        except ValueError as exc:
+            return jsonify({"ok": False, "error": str(exc)}), 400
+
+        try:
+            result = run_sync(args)
+        except Exception as exc:  # pragma: no cover - defensive logging
+            logger.exception("Fallo al ejecutar la sincronización")
+            return jsonify({"ok": False, "error": str(exc)}), 500
+
+        return jsonify(result)
+
+    @app.get("/")
+    def root() -> Any:
+        return jsonify({"ok": True, "message": "runn sync listo"})
+
+    return app
+
+
+APP = create_app()
+
+
+def serve() -> None:
+    port = int(os.environ.get("PORT", "8080"))
+    logger.info("Iniciando servidor HTTP en el puerto %s", port)
+    APP.run(host="0.0.0.0", port=port)
+
+
+def main(argv: Optional[List[str]] = None) -> Dict[str, Any]:
+    parser = build_parser()
+    args = parser.parse_args(argv)
+    result = run_sync(args)
+    print(json.dumps(result, ensure_ascii=False))
+    return result
+
 
 if __name__ == "__main__":
-    main()
+    if "--serve" in sys.argv:
+        sys.argv.remove("--serve")
+        serve()
+    elif os.environ.get("RUNN_SYNC_SERVER", "").lower() in {"1", "true", "yes"}:
+        serve()
+    else:
+        main()

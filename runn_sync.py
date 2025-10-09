@@ -34,14 +34,11 @@ DS = os.environ.get("BQ_DATASET", "people_analytics")
 BQ_LOCATION = os.environ.get("BQ_LOCATION", "US")
 
 # Token Runn (falla temprano si no está al momento de usarlo)
-
-
 def _require_runn_api_token() -> str:
     token = os.environ.get("RUNN_API_TOKEN")
     if not token:
         raise RuntimeError("RUNN_API_TOKEN no está definido en el entorno")
     return token
-
 
 @lru_cache(maxsize=1)
 def _runn_headers() -> Dict[str, str]:
@@ -85,6 +82,21 @@ COLLS: Dict[str, Union[str, Tuple[str, Dict[str, str]]]] = {
 
 # Esquemas con tipos fijos (evita autodetecciones inconsistentes)
 SCHEMA_OVERRIDES: Dict[str, List[bigquery.SchemaField]] = {
+    "runn_people": [
+        bigquery.SchemaField("id", "STRING"),
+        bigquery.SchemaField("firstName", "STRING"),
+        bigquery.SchemaField("lastName", "STRING"),
+        bigquery.SchemaField("email", "STRING"),
+        bigquery.SchemaField("isArchived", "BOOL"),
+        bigquery.SchemaField("teamId", "INT64"),
+        bigquery.SchemaField("holidaysGroupId", "INT64"),
+        bigquery.SchemaField("updatedAt", "TIMESTAMP"),
+        bigquery.SchemaField("createdAt", "TIMESTAMP"),
+        # Siempre serializados como JSON en STRING
+        bigquery.SchemaField("managers", "STRING"),
+        bigquery.SchemaField("tags", "STRING"),
+        bigquery.SchemaField("references", "STRING"),
+    ],
     "runn_actuals": [
         bigquery.SchemaField("id", "STRING"),
         bigquery.SchemaField("date", "DATE"),
@@ -266,6 +278,9 @@ def _null_expr(field: bigquery.SchemaField) -> str:
         return f"NULL AS {q(name)}"
     return f"CAST(NULL AS {field_type}) AS {q(name)}"
 
+# Campos que SIEMPRE serializamos a JSON (evita CAST de ARRAY/RECORD -> STRING)
+ALWAYS_JSONIFY = {"managers", "tags", "references"}
+
 def _cast_expr(
     col: str,
     field: bigquery.SchemaField,
@@ -282,6 +297,10 @@ def _cast_expr(
             return f"TO_JSON_STRING({q(col)}) AS {q(col)}"
         return f"CAST({q(col)} AS STRING) AS {q(col)}"
 
+    # Serialización forzada a JSON en columnas problemáticas
+    if col in ALWAYS_JSONIFY:
+        return f"TO_JSON_STRING({q(col)}) AS {q(col)}"
+
     if tgt_mode == "REPEATED" and tgt_type != "RECORD":
         return f"SAFE_CAST({q(col)} AS ARRAY<{tgt_type}>) AS {q(col)}"
     if tgt_mode == "REPEATED":
@@ -289,6 +308,7 @@ def _cast_expr(
 
     if tgt_type == "STRING":
         if src_mode == "REPEATED" and src_type == "STRING":
+            # En el resto de columnas (no en ALWAYS_JSONIFY), aplastamos arrays de string.
             return f"ARRAY_TO_STRING({q(col)}, ',') AS {q(col)}"
         if src_mode == "REPEATED" or src_type == "RECORD":
             return f"TO_JSON_STRING({q(col)}) AS {q(col)}"
@@ -413,7 +433,6 @@ def load_merge(table_base: str, rows: List[Dict], bq: bigquery.Client) -> int:
         print("---- MERGE SQL ----\n" + merge_sql, flush=True)
         bq.query(merge_sql).result()
     except BadRequest as e:
-        # Log completo del SQL para depuración
         logger.exception("BigQuery BadRequest durante MERGE de %s", table_base)
         raise
     return bq.get_table(tgt).num_rows

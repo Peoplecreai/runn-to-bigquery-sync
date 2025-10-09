@@ -320,7 +320,7 @@ def load_merge(table_base: str, rows: List[Dict], bq: bigquery.Client) -> int:
         else:
             # columna está en destino pero no vino en staging -> NULL tipado
             select_parts.append(f"CAST(NULL AS {bq_type}) AS {col}")
-    select_sql = ",\\n    ".join(select_parts)
+    select_sql = ",\n    ".join(select_parts)
 
     # columnas para MERGE (intersección menos id)
     non_id_cols = [c for c in tgt_map.keys() if c != "id" and c in stg_cols]

@@ -13,6 +13,7 @@ import requests
 from flask import Flask, jsonify, request
 from google.cloud import bigquery
 from google.api_core.exceptions import NotFound, BadRequest
+from functools import lru_cache
 
 # -----------------------------------------------------------------------------
 # Logging / Config
@@ -32,15 +33,24 @@ PROJ = (
 DS = os.environ.get("BQ_DATASET", "people_analytics")
 BQ_LOCATION = os.environ.get("BQ_LOCATION", "US")
 
-# Token Runn (falla temprano si no está)
-if not os.environ.get("RUNN_API_TOKEN"):
-    raise RuntimeError("RUNN_API_TOKEN no está definido en el entorno")
+# Token Runn (falla temprano si no está al momento de usarlo)
 
-HDRS = {
-    "Authorization": f"Bearer {os.environ['RUNN_API_TOKEN']}",
-    "Accept-Version": "1.0.0",
-    "Accept": "application/json",
-}
+
+def _require_runn_api_token() -> str:
+    token = os.environ.get("RUNN_API_TOKEN")
+    if not token:
+        raise RuntimeError("RUNN_API_TOKEN no está definido en el entorno")
+    return token
+
+
+@lru_cache(maxsize=1)
+def _runn_headers() -> Dict[str, str]:
+    token = _require_runn_api_token()
+    return {
+        "Authorization": f"Bearer {token}",
+        "Accept-Version": "1.0.0",
+        "Accept": "application/json",
+    }
 
 print(f"DEBUG: Usando proyecto BQ '{PROJ}' y dataset '{DS}' (loc={BQ_LOCATION})")
 
@@ -182,7 +192,7 @@ def fetch_all(path: str,
               since_iso: Optional[str],
               limit=200,
               extra_params: Optional[Dict[str,str]]=None) -> List[Dict]:
-    s = requests.Session(); s.headers.update(HDRS)
+    s = requests.Session(); s.headers.update(_runn_headers())
     out: List[Dict] = []
     cursor: Optional[str] = None
     backoff = 2
@@ -477,6 +487,7 @@ def build_parser(*, exit_on_error: bool = True) -> argparse.ArgumentParser:
 # Orquestación
 # -----------------------------------------------------------------------------
 def run_sync(args: argparse.Namespace) -> Dict[str, Any]:
+    _require_runn_api_token()
     bq = bigquery.Client(project=PROJ, location=BQ_LOCATION)
     ensure_state_table(bq)
 

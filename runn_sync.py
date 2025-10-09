@@ -92,7 +92,7 @@ SCHEMA_OVERRIDES: Dict[str, List[bigquery.SchemaField]] = {
         bigquery.SchemaField("holidaysGroupId", "INT64"),
         bigquery.SchemaField("updatedAt", "TIMESTAMP"),
         bigquery.SchemaField("createdAt", "TIMESTAMP"),
-        # Siempre serializados como JSON en STRING
+        # Serializados como JSON en STRING
         bigquery.SchemaField("managers", "STRING"),
         bigquery.SchemaField("tags", "STRING"),
         bigquery.SchemaField("references", "STRING"),
@@ -308,7 +308,6 @@ def _cast_expr(
 
     if tgt_type == "STRING":
         if src_mode == "REPEATED" and src_type == "STRING":
-            # En el resto de columnas (no en ALWAYS_JSONIFY), aplastamos arrays de string.
             return f"ARRAY_TO_STRING({q(col)}, ',') AS {q(col)}"
         if src_mode == "REPEATED" or src_type == "RECORD":
             return f"TO_JSON_STRING({q(col)}) AS {q(col)}"
@@ -327,12 +326,76 @@ def _cast_expr(
         return f"SAFE_CAST({q(col)} AS DATETIME) AS {q(col)}"
     return f"{q(col)} AS {q(col)}"
 
+def _can_widen_type(src: str, tgt: str) -> bool:
+    """Reglas simples: permitir INT64→STRING, BOOL→STRING, FLOAT→STRING, INT64→FLOAT64, etc."""
+    if src == tgt:
+        return True
+    widen = {
+        ("INT64", "STRING"),
+        ("FLOAT64", "STRING"),
+        ("BOOL", "STRING"),
+        ("INT64", "FLOAT64"),
+    }
+    return (src, tgt) in widen
+
+def _reconcile_existing_table_schema(tgt_id: str, desired: List[bigquery.SchemaField], bq: bigquery.Client) -> List[bigquery.SchemaField]:
+    """Intenta alinear el esquema existente con el deseado usando ALTER COLUMN cuando sea posible.
+       Si la tabla está vacía y la alteración no es posible, la recrea."""
+    tbl = bq.get_table(tgt_id)
+    existing = tbl.schema
+    ex_map = _schema_to_map(existing)
+    want_map = _schema_to_map(desired)
+
+    # Detectar diferencias de tipo
+    alters: List[str] = []
+    for name, want in want_map.items():
+        if name in ex_map:
+            ex = ex_map[name]
+            ex_t = ex.field_type.upper()
+            want_t = want.field_type.upper()
+            if ex_t != want_t and _can_widen_type(ex_t, want_t):
+                alters.append(f"ALTER COLUMN {q(name)} SET DATA TYPE {want_t}")
+        else:
+            # Columna faltante en la existente → ADD COLUMN
+            want_t = want.field_type.upper()
+            mode = (want.mode or "NULLABLE").upper()
+            mode_sql = " REPEATED" if mode == "REPEATED" else ""
+            alters.append(f"ADD COLUMN {q(name)} {want_t}{mode_sql}")
+
+    if not alters:
+        return existing
+
+    # Si hay alteraciones, intentarlas
+    try:
+        ddl = f"ALTER TABLE `{tgt_id}`\n  " + ",\n  ".join(alters)
+        logger.info("Aplicando DDL de reconciliación:\n%s", ddl)
+        bq.query(ddl).result()
+        # Refrescar esquema
+        return bq.get_table(tgt_id).schema
+    except BadRequest as e:
+        logger.warning("No fue posible ALTER TABLE %s (%s). Intentando recrear si está vacía.", tgt_id, e)
+
+    # Si no se pudo alterar: si está vacía, recrearla
+    if tbl.num_rows == 0:
+        logger.info("Tabla %s vacía. Recreando con el esquema deseado.", tgt_id)
+        bq.delete_table(tgt_id, not_found_ok=True)
+        new_tbl = bigquery.Table(tgt_id, schema=desired)
+        new_tbl.location = BQ_LOCATION
+        bq.create_table(new_tbl)
+        return desired
+
+    logger.warning("Tabla %s no se pudo reconciliar y no está vacía. Continuando con esquema existente.", tgt_id)
+    return existing
+
 def _ensure_target_table(table_base: str, stg_schema: List[bigquery.SchemaField], bq: bigquery.Client) -> List[bigquery.SchemaField]:
-    """Crea la tabla destino si no existe. Si hay override conocido, úsalo."""
+    """Crea/ajusta la tabla destino. Si hay override conocido, lo aplica (vía ALTER o recreación vacía)."""
     tgt_id = f"{PROJ}.{DS}.{table_base}"
     try:
-        tgt_tbl = bq.get_table(tgt_id)
-        return tgt_tbl.schema
+        bq.get_table(tgt_id)
+        if table_base in SCHEMA_OVERRIDES:
+            # Forzar override con reconciliación
+            return _reconcile_existing_table_schema(tgt_id, SCHEMA_OVERRIDES[table_base], bq)
+        return bq.get_table(tgt_id).schema
     except NotFound:
         pass
 
@@ -383,7 +446,7 @@ def load_merge(table_base: str, rows: List[Dict], bq: bigquery.Client) -> int:
     job.result()
 
     stg_schema = bq.get_table(stg).schema
-    # 2) Target (usa overrides si hay)
+    # 2) Target (usa overrides si hay; si existe, reconcilia)
     tgt_schema = _ensure_target_table(table_base, stg_schema, bq)
 
     # 3) SELECT tipado para alinear a destino
@@ -408,6 +471,7 @@ def load_merge(table_base: str, rows: List[Dict], bq: bigquery.Client) -> int:
     insert_vals = [f"S.{q('id')}"] + [f"S.{q(c)}" for c in insert_cols if c != "id"]
     insert_vals_sql = ", ".join(insert_vals)
 
+    # MERGE con id STRING en ambos lados
     merge_sql = f"""
     MERGE `{tgt}` T
     USING (
@@ -415,15 +479,13 @@ def load_merge(table_base: str, rows: List[Dict], bq: bigquery.Client) -> int:
         {select_sql}
       FROM `{stg}`
     ) S
-    ON CAST(T.{q('id')} AS STRING) = S.{q('id')}
+    ON T.{q('id')} = S.{q('id')}
     """
-
     if set_clause:
         merge_sql += f"""
     WHEN MATCHED THEN UPDATE SET
       {set_clause}
     """
-
     merge_sql += f"""
     WHEN NOT MATCHED THEN INSERT ({insert_cols_sql})
     VALUES ({insert_vals_sql})
@@ -431,10 +493,16 @@ def load_merge(table_base: str, rows: List[Dict], bq: bigquery.Client) -> int:
 
     try:
         print("---- MERGE SQL ----\n" + merge_sql, flush=True)
-        bq.query(merge_sql).result()
+        job = bq.query(merge_sql)
+        job.result()
+        logger.info("MERGE %s: %s", table_base, job.state)
     except BadRequest as e:
         logger.exception("BigQuery BadRequest durante MERGE de %s", table_base)
+        for err in getattr(e, "errors", []) or []:
+            logger.error("Detalle BQ: %s", err.get("message"))
         raise
+
+    # Filas en destino
     return bq.get_table(tgt).num_rows
 
 # -----------------------------------------------------------------------------

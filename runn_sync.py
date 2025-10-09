@@ -349,6 +349,7 @@ def load_merge(table_base: str, rows: List[Dict], bq: bigquery.Client) -> int:
     WHEN NOT MATCHED THEN INSERT ({", ".join(insert_cols)})
     VALUES ({", ".join(insert_vals)})
     """
+print("---- MERGE SQL ----\n" + merge_sql, flush=True)
 
     bq.query(merge_sql).result()
     return bq.get_table(tgt).num_rows

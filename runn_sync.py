@@ -240,13 +240,20 @@ def _null_expr(field: bigquery.SchemaField) -> str:
     return f"CAST(NULL AS {field_type}) AS {name}"
 
 
-def _cast_expr(col: str, field: bigquery.SchemaField) -> str:
+def _cast_expr(
+    col: str,
+    field: bigquery.SchemaField,
+    source_field: Optional[bigquery.SchemaField] = None,
+) -> str:
     # id siempre como STRING para clave de MERGE
     if col == "id":
         return "CAST(id AS STRING) AS id"
 
     field_type = field.field_type.upper()
     mode = (field.mode or "NULLABLE").upper()
+
+    src_type = source_field.field_type.upper() if source_field else None
+    src_mode = (source_field.mode or "NULLABLE").upper() if source_field else None
 
     if mode == "REPEATED" and field_type != "RECORD":
         return f"SAFE_CAST({col} AS ARRAY<{field_type}>) AS {col}"
@@ -256,6 +263,8 @@ def _cast_expr(col: str, field: bigquery.SchemaField) -> str:
         return f"{col} AS {col}"
 
     if field_type == "STRING":
+        if src_mode == "REPEATED" or src_type == "RECORD":
+            return f"TO_JSON_STRING({col}) AS {col}"
         return f"CAST({col} AS STRING) AS {col}"
     if field_type in {"INT64", "INTEGER"}:
         return f"SAFE_CAST({col} AS INT64) AS {col}"
@@ -342,7 +351,7 @@ def load_merge(table_base: str, rows: List[Dict], bq: bigquery.Client) -> int:
     select_parts: List[str] = []
     for col, field in tgt_map.items():
         if col in stg_cols:
-            select_parts.append(_cast_expr(col, field))
+            select_parts.append(_cast_expr(col, field, stg_map.get(col)))
         else:
             # columna está en destino pero no vino en staging -> NULL tipado
             select_parts.append(_null_expr(field))

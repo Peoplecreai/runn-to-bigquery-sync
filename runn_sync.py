@@ -245,15 +245,16 @@ def _cast_expr(
     field: bigquery.SchemaField,
     source_field: Optional[bigquery.SchemaField] = None,
 ) -> str:
-    # id siempre como STRING para clave de MERGE
-    if col == "id":
-        return "CAST(id AS STRING) AS id"
-
     field_type = field.field_type.upper()
     mode = (field.mode or "NULLABLE").upper()
 
     src_type = source_field.field_type.upper() if source_field else None
     src_mode = (source_field.mode or "NULLABLE").upper() if source_field else None
+
+    if col == "id":
+        if src_mode == "REPEATED" or src_type == "RECORD":
+            return "TO_JSON_STRING(id) AS id"
+        return "CAST(id AS STRING) AS id"
 
     if mode == "REPEATED" and field_type != "RECORD":
         return f"SAFE_CAST({col} AS ARRAY<{field_type}>) AS {col}"

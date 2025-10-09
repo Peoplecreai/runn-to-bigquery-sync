@@ -222,27 +222,52 @@ def _create_empty_timeoff_table_if_needed(table_base: str, bq: bigquery.Client) 
     schema = SCHEMA_OVERRIDES[table_base]
     bq.create_table(bigquery.Table(tgt, schema=schema))
 
-def _schema_to_map(schema: List[bigquery.SchemaField]) -> Dict[str, str]:
-    return {c.name: c.field_type.upper() for c in schema}
+def _schema_to_map(schema: List[bigquery.SchemaField]) -> Dict[str, bigquery.SchemaField]:
+    return {c.name: c for c in schema}
 
-def _cast_expr(col: str, bq_type: str) -> str:
+
+def _null_expr(field: bigquery.SchemaField) -> str:
+    field_type = field.field_type.upper()
+    mode = (field.mode or "NULLABLE").upper()
+    name = field.name
+    if mode == "REPEATED" and field_type != "RECORD":
+        return f"CAST(NULL AS ARRAY<{field_type}>) AS {name}"
+    if mode == "REPEATED":
+        # Para arrays de RECORD devolvemos NULL directamente.
+        return f"NULL AS {name}"
+    if field_type == "RECORD":
+        return f"NULL AS {name}"
+    return f"CAST(NULL AS {field_type}) AS {name}"
+
+
+def _cast_expr(col: str, field: bigquery.SchemaField) -> str:
     # id siempre como STRING para clave de MERGE
     if col == "id":
         return "CAST(id AS STRING) AS id"
-    t = bq_type.upper()
-    if t in {"STRING"}:
+
+    field_type = field.field_type.upper()
+    mode = (field.mode or "NULLABLE").upper()
+
+    if mode == "REPEATED" and field_type != "RECORD":
+        return f"SAFE_CAST({col} AS ARRAY<{field_type}>) AS {col}"
+
+    if mode == "REPEATED":
+        # Para arrays de RECORD no podemos castear fácilmente; lo dejamos intacto.
+        return f"{col} AS {col}"
+
+    if field_type == "STRING":
         return f"CAST({col} AS STRING) AS {col}"
-    if t in {"INT64", "INTEGER"}:
+    if field_type in {"INT64", "INTEGER"}:
         return f"SAFE_CAST({col} AS INT64) AS {col}"
-    if t in {"FLOAT64", "FLOAT"}:
+    if field_type in {"FLOAT64", "FLOAT"}:
         return f"SAFE_CAST({col} AS FLOAT64) AS {col}"
-    if t in {"BOOL", "BOOLEAN"}:
+    if field_type in {"BOOL", "BOOLEAN"}:
         return f"SAFE_CAST({col} AS BOOL) AS {col}"
-    if t == "DATE":
+    if field_type == "DATE":
         return f"SAFE_CAST({col} AS DATE) AS {col}"
-    if t == "TIMESTAMP":
+    if field_type == "TIMESTAMP":
         return f"SAFE_CAST({col} AS TIMESTAMP) AS {col}"
-    if t == "DATETIME":
+    if field_type == "DATETIME":
         return f"SAFE_CAST({col} AS DATETIME) AS {col}"
     # por defecto sin cast
     return f"{col} AS {col}"
@@ -311,15 +336,16 @@ def load_merge(table_base: str, rows: List[Dict], bq: bigquery.Client) -> int:
 
     # 3) Construye SELECT tipado (S) para alinear a esquema destino
     tgt_map = _schema_to_map(tgt_schema)
-    stg_cols = [c.name for c in stg_schema]
+    stg_map = _schema_to_map(stg_schema)
+    stg_cols = set(stg_map.keys())
 
     select_parts: List[str] = []
-    for col, bq_type in tgt_map.items():
+    for col, field in tgt_map.items():
         if col in stg_cols:
-            select_parts.append(_cast_expr(col, bq_type))
+            select_parts.append(_cast_expr(col, field))
         else:
             # columna está en destino pero no vino en staging -> NULL tipado
-            select_parts.append(f"CAST(NULL AS {bq_type}) AS {col}")
+            select_parts.append(_null_expr(field))
     select_sql = ",\n    ".join(select_parts)
 
     # columnas para MERGE (intersección menos id)
@@ -349,7 +375,7 @@ def load_merge(table_base: str, rows: List[Dict], bq: bigquery.Client) -> int:
     WHEN NOT MATCHED THEN INSERT ({", ".join(insert_cols)})
     VALUES ({", ".join(insert_vals)})
     """
-print("---- MERGE SQL ----\n" + merge_sql, flush=True)
+    print("---- MERGE SQL ----\n" + merge_sql, flush=True)
 
     bq.query(merge_sql).result()
     return bq.get_table(tgt).num_rows

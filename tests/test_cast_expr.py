@@ -30,7 +30,13 @@ def test_cast_expr_id_repeated_source():
 
     expr = _cast_expr("id", tgt, src)
 
-    assert expr == "SAFE_CAST(`id`[SAFE_OFFSET(0)] AS STRING) AS `id`"
+    assert expr == (
+        "CASE\n"
+        "  WHEN `id` IS NULL OR COALESCE(ARRAY_LENGTH(`id`), 0) = 0 THEN NULL\n"
+        "  WHEN JSON_TYPE(TO_JSON(`id`[SAFE_OFFSET(0)])) = 'string' THEN JSON_VALUE(TO_JSON(`id`[SAFE_OFFSET(0)]))\n"
+        "  ELSE TO_JSON_STRING(`id`[SAFE_OFFSET(0)])\n"
+        "END AS `id`"
+    )
 
 
 def test_cast_expr_id_repeated_nested_source():
@@ -44,4 +50,10 @@ def test_cast_expr_id_repeated_nested_source():
 
     expr = _cast_expr("id", tgt, src)
 
-    assert expr == "TO_JSON_STRING(`id`[SAFE_OFFSET(0)]) AS `id`"
+    assert expr == (
+        "CASE\n"
+        "  WHEN `id` IS NULL OR COALESCE(ARRAY_LENGTH(`id`), 0) = 0 THEN NULL\n"
+        "  WHEN JSON_TYPE(TO_JSON(`id`[SAFE_OFFSET(0)])) = 'string' THEN JSON_VALUE(TO_JSON(`id`[SAFE_OFFSET(0)]))\n"
+        "  ELSE TO_JSON_STRING(`id`[SAFE_OFFSET(0)])\n"
+        "END AS `id`"
+    )

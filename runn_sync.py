@@ -325,7 +325,7 @@ def _cast_expr(col: str,
 
                 # Fallback para arreglos que contienen JSON serializado (ej. ["[1,2,3]", ...])
                 if inner_type == "STRING" and not child_fields:
-                    jsonified = "TO_JSON(SAFE.PARSE_JSON(x))"
+                    jsonified = "COALESCE(TO_JSON(SAFE.PARSE_JSON(x)), TO_JSON(x))"
                     return (
                         "ARRAY(\n"
                         f"  SELECT SAFE_CAST(elem AS {tgt_type})\n"
@@ -333,7 +333,7 @@ def _cast_expr(col: str,
                         "  CROSS JOIN UNNEST(\n"  # desanidar arreglos JSON si aplica
                         f"    IF(JSON_TYPE({jsonified}) = 'array',\n"
                         f"       JSON_VALUE_ARRAY({jsonified}),\n"
-                        "       [x]\n"
+                        f"       [JSON_VALUE({jsonified})]\n"
                         "    )\n"
                         "  ) AS elem\n"
                         ") AS "

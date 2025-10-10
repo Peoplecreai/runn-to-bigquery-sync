@@ -132,6 +132,28 @@ SCHEMA_OVERRIDES: Dict[str, List[bigquery.SchemaField]] = {
         bigquery.SchemaField("updatedAt", "TIMESTAMP"),
         bigquery.SchemaField("minutesPerDay", "INT64"),
     ],
+    "runn_custom_fields_checkbox_person": [
+        bigquery.SchemaField("id", "STRING"),
+        bigquery.SchemaField("name", "STRING"),
+        bigquery.SchemaField("model", "STRING"),
+        bigquery.SchemaField("value", "JSON"),
+        bigquery.SchemaField("values", "JSON"),
+        bigquery.SchemaField("isArchived", "BOOL"),
+        bigquery.SchemaField("createdAt", "TIMESTAMP"),
+        bigquery.SchemaField("updatedAt", "TIMESTAMP"),
+        bigquery.SchemaField("metadata", "JSON"),
+    ],
+    "runn_custom_fields_checkbox_project": [
+        bigquery.SchemaField("id", "STRING"),
+        bigquery.SchemaField("name", "STRING"),
+        bigquery.SchemaField("model", "STRING"),
+        bigquery.SchemaField("value", "JSON"),
+        bigquery.SchemaField("values", "JSON"),
+        bigquery.SchemaField("isArchived", "BOOL"),
+        bigquery.SchemaField("createdAt", "TIMESTAMP"),
+        bigquery.SchemaField("updatedAt", "TIMESTAMP"),
+        bigquery.SchemaField("metadata", "JSON"),
+    ],
 }
 
 # -----------------------------------------------------------------------------
@@ -296,18 +318,14 @@ def _cast_expr(col: str,
     # ID como STRING para el JOIN del MERGE
     if col == "id":
         if src_mode == "REPEATED":
-            has_repeated_children = False
-            if src_field is not None:
-                child_fields = getattr(src_field, "fields", []) or []
-                has_repeated_children = any(
-                    (child.mode or "NULLABLE").upper() == "REPEATED"
-                    for child in child_fields
-                )
-
-            if has_repeated_children:
-                return f"TO_JSON_STRING({q(col)}[SAFE_OFFSET(0)]) AS {q(col)}"
-
-            return f"SAFE_CAST({q(col)}[SAFE_OFFSET(0)] AS STRING) AS {q(col)}"
+            jsonified = f"TO_JSON({q(col)}[SAFE_OFFSET(0)])"
+            return (
+                "CASE\n"
+                f"  WHEN {q(col)} IS NULL OR COALESCE(ARRAY_LENGTH({q(col)}), 0) = 0 THEN NULL\n"
+                f"  WHEN JSON_TYPE({jsonified}) = 'string' THEN JSON_VALUE({jsonified})\n"
+                f"  ELSE TO_JSON_STRING({q(col)}[SAFE_OFFSET(0)])\n"
+                f"END AS {q(col)}"
+            )
         return f"CAST({q(col)} AS STRING) AS {q(col)}"
 
     # El destino es REPETIDO (ARRAY)
@@ -702,6 +720,7 @@ def run_sync(args: argparse.Namespace) -> Dict[str, Any]:
         rows = fetch_all(path, since_iso if use_modified_after else None, extra_params=extra)
 
         # Carga/MERGE
+        logger.info("Iniciando load_merge para tabla: %s", tbl)
         n = load_merge(tbl, rows, bq)
         summary[tbl] = int(n)
 

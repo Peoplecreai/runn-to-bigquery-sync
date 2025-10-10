@@ -314,6 +314,8 @@ def _cast_expr(col: str,
     if tgt_mode == "REPEATED":
         # Si la fuente también es REPETIDO, simplemente castear los elementos internos
         if src_mode == "REPEATED":
+            if tgt_type in {"STRUCT", "RECORD"}:
+                return f"{q(col)} AS {q(col)}"
             if src_field is not None:
                 inner_type = (src_field.field_type or "").upper()
                 child_fields = list(getattr(src_field, "fields", []) or [])

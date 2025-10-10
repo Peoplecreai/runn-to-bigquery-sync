@@ -299,35 +299,52 @@ def _cast_expr(col: str,
 
     # JSON de destino
     if tgt_type == "JSON":
-        # Si ya viene JSON, pasa
         if src_type == "JSON":
             return f"{q(col)} AS {q(col)}"
-        # Si viene RECORD o REPEATED, serializa a JSON tipado
         if src_type == "RECORD" or src_mode == "REPEATED":
             return f"TO_JSON({q(col)}) AS {q(col)}"
-        # Si viene STRING, interpretar como JSON si aplica
         if src_type == "STRING":
             return f"SAFE_CAST({q(col)} AS JSON) AS {q(col)}"
-        # Primitivos → JSON
         return f"TO_JSON({q(col)}) AS {q(col)}"
 
     # REPEATED no-RECORD de destino: construir arreglo saneando tipos
     if tgt_mode == "REPEATED" and tgt_type != "RECORD":
         if src_mode == "REPEATED":
-            # Mapear elemento a tipo destino
             return (
                 f"ARRAY(SELECT SAFE_CAST(x AS {tgt_type}) FROM UNNEST({q(col)}) AS x) "
                 f"AS {q(col)}"
             )
-        # Fuente escalar → array de 1 o NULL
         return (
             f"CASE WHEN {q(col)} IS NULL THEN CAST(NULL AS ARRAY<{tgt_type}>) "
             f"ELSE [SAFE_CAST({q(col)} AS {tgt_type})] END AS {q(col)}"
         )
 
-    # REPEATED RECORD de destino (no lo usamos hoy): pasar tal cual
+    # REPEATED RECORD de destino: pasar tal cual
     if tgt_mode == "REPEATED" and tgt_type == "RECORD":
         return f"{q(col)} AS {q(col)}"
+
+    # Casts escalares
+    if tgt_type in {"INT64", "INTEGER"}:
+        return f"SAFE_CAST({q(col)} AS INT64) AS {q(col)}"
+    if tgt_type in {"FLOAT64", "FLOAT"}:
+        return f"SAFE_CAST({q(col)} AS FLOAT64) AS {q(col)}"
+    if tgt_type in {"BOOL", "BOOLEAN"}:
+        return f"SAFE_CAST({q(col)} AS BOOL) AS {q(col)}"
+    if tgt_type == "DATE":
+        return f"SAFE_CAST({q(col)} AS DATE) AS {q(col)}"
+    if tgt_type == "TIMESTAMP":
+        return f"SAFE_CAST({q(col)} AS TIMESTAMP) AS {q(col)}"
+    if tgt_type == "DATETIME":
+        return f"SAFE_CAST({q(col)} AS DATETIME) AS {q(col)}"
+
+    # STRING de destino (asegurándonos de que no sea REPEATED)
+    if tgt_type == "STRING" and tgt_mode != "REPEATED":
+        if src_type == "RECORD" or src_mode == "REPEATED":
+            return f"TO_JSON_STRING({q(col)}) AS {q(col)}"
+        return f"CAST({q(col)} AS STRING) AS {q(col)}"
+
+    # Fallback: pasar tal cual
+    return f"{q(col)} AS {q(col)}"
 
     # Casts escalares
     if tgt_type in {"INT64", "INTEGER"}:

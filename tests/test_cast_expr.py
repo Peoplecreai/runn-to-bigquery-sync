@@ -45,3 +45,38 @@ def test_cast_expr_id_repeated_nested_source():
     expr = _cast_expr("id", tgt, src)
 
     assert expr == "TO_JSON_STRING(`id`[SAFE_OFFSET(0)]) AS `id`"
+
+
+def test_cast_expr_id_scalar_int_target():
+    tgt = _field("id", "INT64")
+    src = _field("id", "STRING")
+
+    expr = _cast_expr("id", tgt, src)
+
+    assert expr == "SAFE_CAST(`id` AS INT64) AS `id`"
+
+
+def test_cast_expr_id_repeated_int_target():
+    tgt = _field("id", "INT64")
+    src = _field("id", "STRING", mode="REPEATED")
+
+    expr = _cast_expr("id", tgt, src)
+
+    assert expr == "SAFE_CAST(`id`[SAFE_OFFSET(0)] AS INT64) AS `id`"
+
+
+def test_cast_expr_id_repeated_nested_int_target():
+    tgt = _field("id", "INT64")
+    src = bigquery.SchemaField(
+        "id",
+        "RECORD",
+        mode="REPEATED",
+        fields=[bigquery.SchemaField("value", "STRING", mode="REPEATED")],
+    )
+
+    expr = _cast_expr("id", tgt, src)
+
+    assert (
+        expr
+        == "SAFE_CAST(JSON_VALUE(TO_JSON(`id`[SAFE_OFFSET(0)])) AS INT64) AS `id`"
+    )

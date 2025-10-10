@@ -84,9 +84,9 @@ COLLS: Dict[str, Union[str, Tuple[str, Dict[str, str]]]] = {
 # Esquemas con tipos fijos (evita autodetecciones inconsistentes)
 # -----------------------------------------------------------------------------
 SCHEMA_OVERRIDES: Dict[str, List[bigquery.SchemaField]] = {
-    # Nativo: managers y tags REPEATED STRING; references JSON
+    # Nativo: managers y tags REPEATED STRING; references REPEATED RECORD
     "runn_people": [
-        bigquery.SchemaField("id", "STRING"),
+        bigquery.SchemaField("id", "INT64"),
         bigquery.SchemaField("firstName", "STRING"),
         bigquery.SchemaField("lastName", "STRING"),
         bigquery.SchemaField("email", "STRING"),
@@ -97,7 +97,15 @@ SCHEMA_OVERRIDES: Dict[str, List[bigquery.SchemaField]] = {
         bigquery.SchemaField("createdAt", "TIMESTAMP"),
         bigquery.SchemaField("managers", "STRING", mode="REPEATED"),
         bigquery.SchemaField("tags", "STRING", mode="REPEATED"),
-        bigquery.SchemaField("references", "JSON"),
+        bigquery.SchemaField(
+            "references",
+            "RECORD",
+            mode="REPEATED",
+            fields=[
+                bigquery.SchemaField("externalId", "STRING"),
+                bigquery.SchemaField("referenceName", "STRING"),
+            ],
+        ),
     ],
     "runn_actuals": [
         bigquery.SchemaField("id", "STRING"),
@@ -295,6 +303,22 @@ def _cast_expr(col: str,
 
     # ID como STRING para el JOIN del MERGE
     if col == "id":
+        if tgt_type == "STRING":
+            if src_mode == "REPEATED":
+                has_repeated_children = False
+                if src_field is not None:
+                    child_fields = getattr(src_field, "fields", []) or []
+                    has_repeated_children = any(
+                        (child.mode or "NULLABLE").upper() == "REPEATED"
+                        for child in child_fields
+                    )
+
+                if has_repeated_children:
+                    return f"TO_JSON_STRING({q(col)}[SAFE_OFFSET(0)]) AS {q(col)}"
+
+                return f"SAFE_CAST({q(col)}[SAFE_OFFSET(0)] AS STRING) AS {q(col)}"
+            return f"CAST({q(col)} AS STRING) AS {q(col)}"
+
         if src_mode == "REPEATED":
             has_repeated_children = False
             if src_field is not None:
@@ -305,10 +329,14 @@ def _cast_expr(col: str,
                 )
 
             if has_repeated_children:
-                return f"TO_JSON_STRING({q(col)}[SAFE_OFFSET(0)]) AS {q(col)}"
+                return (
+                    f"SAFE_CAST(JSON_VALUE(TO_JSON({q(col)}[SAFE_OFFSET(0)])) AS {tgt_type}) "
+                    f"AS {q(col)}"
+                )
 
-            return f"SAFE_CAST({q(col)}[SAFE_OFFSET(0)] AS STRING) AS {q(col)}"
-        return f"CAST({q(col)} AS STRING) AS {q(col)}"
+            return f"SAFE_CAST({q(col)}[SAFE_OFFSET(0)] AS {tgt_type}) AS {q(col)}"
+
+        return f"SAFE_CAST({q(col)} AS {tgt_type}) AS {q(col)}"
 
     # El destino es REPETIDO (ARRAY)
     if tgt_mode == "REPEATED":

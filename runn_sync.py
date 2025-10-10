@@ -295,6 +295,8 @@ def _cast_expr(col: str,
 
     # ID como STRING para el JOIN del MERGE
     if col == "id":
+        if src_mode == "REPEATED":
+            return f"SAFE_CAST({q(col)}[SAFE_OFFSET(0)] AS STRING) AS {q(col)}"
         return f"CAST({q(col)} AS STRING) AS {q(col)}"
 
     # El destino es REPETIDO (ARRAY)

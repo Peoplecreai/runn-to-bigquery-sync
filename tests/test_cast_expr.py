@@ -31,3 +31,17 @@ def test_cast_expr_id_repeated_source():
     expr = _cast_expr("id", tgt, src)
 
     assert expr == "SAFE_CAST(`id`[SAFE_OFFSET(0)] AS STRING) AS `id`"
+
+
+def test_cast_expr_id_repeated_nested_source():
+    tgt = _field("id", "STRING")
+    src = bigquery.SchemaField(
+        "id",
+        "RECORD",
+        mode="REPEATED",
+        fields=[bigquery.SchemaField("value", "STRING", mode="REPEATED")],
+    )
+
+    expr = _cast_expr("id", tgt, src)
+
+    assert expr == "TO_JSON_STRING(`id`[SAFE_OFFSET(0)]) AS `id`"

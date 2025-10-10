@@ -296,6 +296,17 @@ def _cast_expr(col: str,
     # ID como STRING para el JOIN del MERGE
     if col == "id":
         if src_mode == "REPEATED":
+            has_repeated_children = False
+            if src_field is not None:
+                child_fields = getattr(src_field, "fields", []) or []
+                has_repeated_children = any(
+                    (child.mode or "NULLABLE").upper() == "REPEATED"
+                    for child in child_fields
+                )
+
+            if has_repeated_children:
+                return f"TO_JSON_STRING({q(col)}[SAFE_OFFSET(0)]) AS {q(col)}"
+
             return f"SAFE_CAST({q(col)}[SAFE_OFFSET(0)] AS STRING) AS {q(col)}"
         return f"CAST({q(col)} AS STRING) AS {q(col)}"
 

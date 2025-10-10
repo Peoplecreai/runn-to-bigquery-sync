@@ -281,58 +281,39 @@ def _null_expr(field: bigquery.SchemaField) -> str:
 # Campos que SIEMPRE serializamos a JSON (evita CAST de ARRAY/RECORD -> STRING)
 ALWAYS_JSONIFY = {"managers", "tags", "references"}
 
-    # id como STRING para clave MERGE
-    def _cast_expr(col: str, bq_type: str) -> str:
-    t = (bq_type or "STRING").upper()
+def _cast_expr(col: str,
+               tgt_field: bigquery.SchemaField,
+               src_field: Optional[bigquery.SchemaField]) -> str:
+    """
+    Devuelve la expresión SELECT para proyectar la columna `col` desde staging a destino,
+    respetando el tipo/modo del destino y convirtiendo arrays/records a STRING vía JSON cuando aplica.
+    """
+    tgt_type = (tgt_field.field_type or "STRING").upper()
+    tgt_mode = (tgt_field.mode or "NULLABLE").upper()
+    src_type = (src_field.field_type if src_field else "STRING").upper()
+    src_mode = (src_field.mode if src_field else "NULLABLE").upper()
 
     # Clave MERGE: id como STRING siempre
     if col == "id":
         return f"CAST({q(col)} AS STRING) AS {q(col)}"
 
-    # Estos campos pueden venir REPEATED / RECORD -> serializa a JSON
+    # Serializar a JSON estos campos, sin importar cómo venga la fuente
     if col in ALWAYS_JSONIFY:
         return f"TO_JSON_STRING({q(col)}) AS {q(col)}"
 
-    # Resto de tipos:
-    if t in {"STRING"}:
-        return f"CAST({q(col)} AS STRING) AS {q(col)}"
-    if t in {"INT64", "INTEGER"}:
-        return f"SAFE_CAST({q(col)} AS INT64) AS {q(col)}"
-    if t in {"FLOAT64", "FLOAT"}:
-        return f"SAFE_CAST({q(col)} AS FLOAT64) AS {q(col)}"
-    if t in {"BOOL", "BOOLEAN"}:
-        return f"SAFE_CAST({q(col)} AS BOOL) AS {q(col)}"
-    if t == "DATE":
-        return f"SAFE_CAST({q(col)} AS DATE) AS {q(col)}"
-    if t == "TIMESTAMP":
-        return f"SAFE_CAST({q(col)} AS TIMESTAMP) AS {q(col)}"
-    if t == "DATETIME":
-        return f"SAFE_CAST({q(col)} AS DATETIME) AS {q(col)}"
-    # Default: deja pasar
-    return f"{q(col)} AS {q(col)}"
-
-    # id como STRING para clave MERGE
-    if col == "id":
-        if src_mode == "REPEATED" or src_type == "RECORD":
-            return f"TO_JSON_STRING({q(col)}) AS {q(col)}"
-        return f"CAST({q(col)} AS STRING) AS {q(col)}"
-
-    # Fuerza JSON en campos problemáticos que vienen REPEATED/RECORD
-    if col in ALWAYS_JSONIFY:
+    # Si el destino es STRING pero la fuente es REPEATED o RECORD → JSON
+    if tgt_type == "STRING" and (src_mode == "REPEATED" or src_type == "RECORD"):
         return f"TO_JSON_STRING({q(col)}) AS {q(col)}"
 
-    if tgt_mode == "REPEATED" and tgt_type != "RECORD":
+    # Si el destino es REPEATED (no RECORD) y la fuente no lo es, intentamos castear a array del tipo destino
+    if tgt_mode == "REPEATED" and tgt_type != "RECORD" and src_mode != "REPEATED":
         return f"SAFE_CAST({q(col)} AS ARRAY<{tgt_type}>) AS {q(col)}"
-    if tgt_mode == "REPEATED":
+
+    # Si el destino es REPEATED RECORD, lo dejamos pasar (o JSON si quisieras a futuro)
+    if tgt_mode == "REPEATED" and tgt_type == "RECORD":
         return f"{q(col)} AS {q(col)}"
 
-    if tgt_type == "STRING":
-        if src_mode == "REPEATED" and src_type == "STRING":
-            # Si no está en ALWAYS_JSONIFY, podrías aplastar a string:
-            return f"ARRAY_TO_STRING({q(col)}, ',') AS {q(col)}"
-        if src_mode == "REPEATED" or src_type == "RECORD":
-            return f"TO_JSON_STRING({q(col)}) AS {q(col)}"
-        return f"CAST({q(col)} AS STRING) AS {q(col)}"
+    # Casts escalares seguros
     if tgt_type in {"INT64", "INTEGER"}:
         return f"SAFE_CAST({q(col)} AS INT64) AS {q(col)}"
     if tgt_type in {"FLOAT64", "FLOAT"}:
@@ -345,6 +326,12 @@ ALWAYS_JSONIFY = {"managers", "tags", "references"}
         return f"SAFE_CAST({q(col)} AS TIMESTAMP) AS {q(col)}"
     if tgt_type == "DATETIME":
         return f"SAFE_CAST({q(col)} AS DATETIME) AS {q(col)}"
+
+    # Por defecto, string
+    if tgt_type == "STRING":
+        return f"CAST({q(col)} AS STRING) AS {q(col)}"
+
+    # Fallback: deja pasar
     return f"{q(col)} AS {q(col)}"
 
 def _can_widen_type(src: str, tgt: str) -> bool:

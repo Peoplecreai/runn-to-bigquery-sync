@@ -281,26 +281,35 @@ def _null_expr(field: bigquery.SchemaField) -> str:
 # Campos que SIEMPRE serializamos a JSON (evita CAST de ARRAY/RECORD -> STRING)
 ALWAYS_JSONIFY = {"managers", "tags", "references"}
 
-def _cast_expr(
-    col: str,
-    field: bigquery.SchemaField,
-    source_field: Optional[bigquery.SchemaField] = None,
-) -> str:
-    tgt_type = field.field_type.upper()
-    tgt_mode = (field.mode or "NULLABLE").upper()
-    src_type = (source_field.field_type.upper() if source_field else None)
-    src_mode = ((source_field.mode or "NULLABLE").upper() if source_field else None)
-
     # id como STRING para clave MERGE
-    def _cast_expr(
-    col: str,
-    field: bigquery.SchemaField,
-    source_field: Optional[bigquery.SchemaField] = None,
-) -> str:
-    tgt_type = field.field_type.upper()
-    tgt_mode = (field.mode or "NULLABLE").upper()
-    src_type = (source_field.field_type.upper() if source_field else None)
-    src_mode = ((source_field.mode or "NULLABLE").upper() if source_field else None)
+    def _cast_expr(col: str, bq_type: str) -> str:
+    t = (bq_type or "STRING").upper()
+
+    # Clave MERGE: id como STRING siempre
+    if col == "id":
+        return f"CAST({q(col)} AS STRING) AS {q(col)}"
+
+    # Estos campos pueden venir REPEATED / RECORD -> serializa a JSON
+    if col in ALWAYS_JSONIFY:
+        return f"TO_JSON_STRING({q(col)}) AS {q(col)}"
+
+    # Resto de tipos:
+    if t in {"STRING"}:
+        return f"CAST({q(col)} AS STRING) AS {q(col)}"
+    if t in {"INT64", "INTEGER"}:
+        return f"SAFE_CAST({q(col)} AS INT64) AS {q(col)}"
+    if t in {"FLOAT64", "FLOAT"}:
+        return f"SAFE_CAST({q(col)} AS FLOAT64) AS {q(col)}"
+    if t in {"BOOL", "BOOLEAN"}:
+        return f"SAFE_CAST({q(col)} AS BOOL) AS {q(col)}"
+    if t == "DATE":
+        return f"SAFE_CAST({q(col)} AS DATE) AS {q(col)}"
+    if t == "TIMESTAMP":
+        return f"SAFE_CAST({q(col)} AS TIMESTAMP) AS {q(col)}"
+    if t == "DATETIME":
+        return f"SAFE_CAST({q(col)} AS DATETIME) AS {q(col)}"
+    # Default: deja pasar
+    return f"{q(col)} AS {q(col)}"
 
     # id como STRING para clave MERGE
     if col == "id":

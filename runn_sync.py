@@ -80,8 +80,11 @@ COLLS: Dict[str, Union[str, Tuple[str, Dict[str, str]]]] = {
     "runn_custom_fields_checkbox_project": ("/custom-fields/checkbox/", {"model": "PROJECT"}),
 }
 
+# -----------------------------------------------------------------------------
 # Esquemas con tipos fijos (evita autodetecciones inconsistentes)
+# -----------------------------------------------------------------------------
 SCHEMA_OVERRIDES: Dict[str, List[bigquery.SchemaField]] = {
+    # Nativo: managers y tags REPEATED STRING; references JSON
     "runn_people": [
         bigquery.SchemaField("id", "STRING"),
         bigquery.SchemaField("firstName", "STRING"),
@@ -92,10 +95,9 @@ SCHEMA_OVERRIDES: Dict[str, List[bigquery.SchemaField]] = {
         bigquery.SchemaField("holidaysGroupId", "INT64"),
         bigquery.SchemaField("updatedAt", "TIMESTAMP"),
         bigquery.SchemaField("createdAt", "TIMESTAMP"),
-        # Serializados como JSON en STRING
-        bigquery.SchemaField("managers", "STRING"),
-        bigquery.SchemaField("tags", "STRING"),
-        bigquery.SchemaField("references", "STRING"),
+        bigquery.SchemaField("managers", "STRING", mode="REPEATED"),
+        bigquery.SchemaField("tags", "STRING", mode="REPEATED"),
+        bigquery.SchemaField("references", "JSON"),
     ],
     "runn_actuals": [
         bigquery.SchemaField("id", "STRING"),
@@ -136,7 +138,6 @@ SCHEMA_OVERRIDES: Dict[str, List[bigquery.SchemaField]] = {
 # Utilidades
 # -----------------------------------------------------------------------------
 def q(name: str) -> str:
-    """Cita identificadores (columnas) con backticks."""
     return f"`{name}`"
 
 def state_table() -> str:
@@ -276,44 +277,59 @@ def _null_expr(field: bigquery.SchemaField) -> str:
         return f"NULL AS {q(name)}"
     if field_type == "RECORD":
         return f"NULL AS {q(name)}"
+    if field_type == "JSON":
+        return f"CAST(NULL AS JSON) AS {q(name)}"
     return f"CAST(NULL AS {field_type}) AS {q(name)}"
-
-# Campos que SIEMPRE serializamos a JSON (evita CAST de ARRAY/RECORD -> STRING)
-ALWAYS_JSONIFY = {"managers", "tags", "references"}
 
 def _cast_expr(col: str,
                tgt_field: bigquery.SchemaField,
                src_field: Optional[bigquery.SchemaField]) -> str:
     """
-    Devuelve la expresión SELECT para proyectar la columna `col` desde staging a destino,
-    respetando el tipo/modo del destino y convirtiendo arrays/records a STRING vía JSON cuando aplica.
+    Proyecta `col` desde staging a destino, respetando tipos/modos y usando
+    TO_JSON/SAFE_CAST cuando aplica. Evita CAST inválidos de ARRAY/RECORD → STRING.
     """
     tgt_type = (tgt_field.field_type or "STRING").upper()
     tgt_mode = (tgt_field.mode or "NULLABLE").upper()
     src_type = (src_field.field_type if src_field else "STRING").upper()
     src_mode = (src_field.mode if src_field else "NULLABLE").upper()
 
-    # Clave MERGE: id como STRING siempre
+    # id como STRING para join del MERGE
     if col == "id":
         return f"CAST({q(col)} AS STRING) AS {q(col)}"
 
-    # Serializar a JSON estos campos, sin importar cómo venga la fuente
-    if col in ALWAYS_JSONIFY:
-        return f"TO_JSON_STRING({q(col)}) AS {q(col)}"
+    # JSON de destino
+    if tgt_type == "JSON":
+        # Si ya viene JSON, pasa
+        if src_type == "JSON":
+            return f"{q(col)} AS {q(col)}"
+        # Si viene RECORD o REPEATED, serializa a JSON tipado
+        if src_type == "RECORD" or src_mode == "REPEATED":
+            return f"TO_JSON({q(col)}) AS {q(col)}"
+        # Si viene STRING, interpretar como JSON si aplica
+        if src_type == "STRING":
+            return f"SAFE_CAST({q(col)} AS JSON) AS {q(col)}"
+        # Primitivos → JSON
+        return f"TO_JSON({q(col)}) AS {q(col)}"
 
-    # Si el destino es STRING pero la fuente es REPEATED o RECORD → JSON
-    if tgt_type == "STRING" and (src_mode == "REPEATED" or src_type == "RECORD"):
-        return f"TO_JSON_STRING({q(col)}) AS {q(col)}"
+    # REPEATED no-RECORD de destino: construir arreglo saneando tipos
+    if tgt_mode == "REPEATED" and tgt_type != "RECORD":
+        if src_mode == "REPEATED":
+            # Mapear elemento a tipo destino
+            return (
+                f"ARRAY(SELECT SAFE_CAST(x AS {tgt_type}) FROM UNNEST({q(col)}) AS x) "
+                f"AS {q(col)}"
+            )
+        # Fuente escalar → array de 1 o NULL
+        return (
+            f"CASE WHEN {q(col)} IS NULL THEN CAST(NULL AS ARRAY<{tgt_type}>) "
+            f"ELSE [SAFE_CAST({q(col)} AS {tgt_type})] END AS {q(col)}"
+        )
 
-    # Si el destino es REPEATED (no RECORD) y la fuente no lo es, intentamos castear a array del tipo destino
-    if tgt_mode == "REPEATED" and tgt_type != "RECORD" and src_mode != "REPEATED":
-        return f"SAFE_CAST({q(col)} AS ARRAY<{tgt_type}>) AS {q(col)}"
-
-    # Si el destino es REPEATED RECORD, lo dejamos pasar (o JSON si quisieras a futuro)
+    # REPEATED RECORD de destino (no lo usamos hoy): pasar tal cual
     if tgt_mode == "REPEATED" and tgt_type == "RECORD":
         return f"{q(col)} AS {q(col)}"
 
-    # Casts escalares seguros
+    # Casts escalares
     if tgt_type in {"INT64", "INTEGER"}:
         return f"SAFE_CAST({q(col)} AS INT64) AS {q(col)}"
     if tgt_type in {"FLOAT64", "FLOAT"}:
@@ -327,15 +343,17 @@ def _cast_expr(col: str,
     if tgt_type == "DATETIME":
         return f"SAFE_CAST({q(col)} AS DATETIME) AS {q(col)}"
 
-    # Por defecto, string
+    # STRING de destino
     if tgt_type == "STRING":
+        # Si la fuente es RECORD o REPEATED, evitar cast directo
+        if src_type == "RECORD" or src_mode == "REPEATED":
+            return f"TO_JSON_STRING({q(col)}) AS {q(col)}"
         return f"CAST({q(col)} AS STRING) AS {q(col)}"
 
-    # Fallback: deja pasar
+    # Fallback: pasar tal cual
     return f"{q(col)} AS {q(col)}"
 
 def _can_widen_type(src: str, tgt: str) -> bool:
-    """Reglas simples: permitir INT64→STRING, BOOL→STRING, FLOAT→STRING, INT64→FLOAT64, etc."""
     if src == tgt:
         return True
     widen = {
@@ -343,28 +361,32 @@ def _can_widen_type(src: str, tgt: str) -> bool:
         ("FLOAT64", "STRING"),
         ("BOOL", "STRING"),
         ("INT64", "FLOAT64"),
+        ("STRING", "JSON"),  # puede no ser permitido siempre; se intenta y si falla se recrea
     }
     return (src, tgt) in widen
 
 def _reconcile_existing_table_schema(tgt_id: str, desired: List[bigquery.SchemaField], bq: bigquery.Client) -> List[bigquery.SchemaField]:
-    """Intenta alinear el esquema existente con el deseado usando ALTER COLUMN cuando sea posible.
-       Si la tabla está vacía y la alteración no es posible, la recrea."""
     tbl = bq.get_table(tgt_id)
     existing = tbl.schema
     ex_map = _schema_to_map(existing)
     want_map = _schema_to_map(desired)
 
-    # Detectar diferencias de tipo
     alters: List[str] = []
     for name, want in want_map.items():
         if name in ex_map:
             ex = ex_map[name]
             ex_t = ex.field_type.upper()
             want_t = want.field_type.upper()
+            ex_m = (ex.mode or "NULLABLE").upper()
+            want_m = (want.mode or "NULLABLE").upper()
+
+            # Modo REPEATED no se puede mutar; se intentará recrear si está vacío
+            if ex_m != want_m:
+                continue
+
             if ex_t != want_t and _can_widen_type(ex_t, want_t):
                 alters.append(f"ALTER COLUMN {q(name)} SET DATA TYPE {want_t}")
         else:
-            # Columna faltante en la existente → ADD COLUMN
             want_t = want.field_type.upper()
             mode = (want.mode or "NULLABLE").upper()
             mode_sql = " REPEATED" if mode == "REPEATED" else ""
@@ -373,17 +395,14 @@ def _reconcile_existing_table_schema(tgt_id: str, desired: List[bigquery.SchemaF
     if not alters:
         return existing
 
-    # Si hay alteraciones, intentarlas
     try:
         ddl = f"ALTER TABLE `{tgt_id}`\n  " + ",\n  ".join(alters)
         logger.info("Aplicando DDL de reconciliación:\n%s", ddl)
         bq.query(ddl).result()
-        # Refrescar esquema
         return bq.get_table(tgt_id).schema
     except BadRequest as e:
         logger.warning("No fue posible ALTER TABLE %s (%s). Intentando recrear si está vacía.", tgt_id, e)
 
-    # Si no se pudo alterar: si está vacía, recrearla
     if tbl.num_rows == 0:
         logger.info("Tabla %s vacía. Recreando con el esquema deseado.", tgt_id)
         bq.delete_table(tgt_id, not_found_ok=True)
@@ -396,12 +415,10 @@ def _reconcile_existing_table_schema(tgt_id: str, desired: List[bigquery.SchemaF
     return existing
 
 def _ensure_target_table(table_base: str, stg_schema: List[bigquery.SchemaField], bq: bigquery.Client) -> List[bigquery.SchemaField]:
-    """Crea/ajusta la tabla destino. Si hay override conocido, lo aplica (vía ALTER o recreación vacía)."""
     tgt_id = f"{PROJ}.{DS}.{table_base}"
     try:
         bq.get_table(tgt_id)
         if table_base in SCHEMA_OVERRIDES:
-            # Forzar override con reconciliación
             return _reconcile_existing_table_schema(tgt_id, SCHEMA_OVERRIDES[table_base], bq)
         return bq.get_table(tgt_id).schema
     except NotFound:
@@ -472,14 +489,12 @@ def load_merge(table_base: str, rows: List[Dict], bq: bigquery.Client) -> int:
 
     # columnas para MERGE (intersección menos id)
     non_id_cols = [c for c in tgt_map.keys() if c != "id" and c in stg_cols]
-
     set_clause  = ", ".join([f"T.{q(c)}=S.{q(c)}" for c in non_id_cols]) if non_id_cols else ""
     insert_cols = ["id"] + [c for c in tgt_map.keys() if c != "id" and c in stg_cols]
     insert_cols_sql = ", ".join(q(c) for c in insert_cols)
     insert_vals = [f"S.{q('id')}"] + [f"S.{q(c)}" for c in insert_cols if c != "id"]
     insert_vals_sql = ", ".join(insert_vals)
 
-    # MERGE con id STRING en ambos lados
     merge_sql = f"""
     MERGE `{tgt}` T
     USING (
@@ -510,7 +525,6 @@ def load_merge(table_base: str, rows: List[Dict], bq: bigquery.Client) -> int:
             logger.error("Detalle BQ: %s", err.get("message"))
         raise
 
-    # Filas en destino
     return bq.get_table(tgt).num_rows
 
 # -----------------------------------------------------------------------------

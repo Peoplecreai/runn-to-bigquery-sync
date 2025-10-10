@@ -292,14 +292,25 @@ def _cast_expr(
     src_mode = ((source_field.mode or "NULLABLE").upper() if source_field else None)
 
     # id como STRING para clave MERGE
-    if col == "id":
-    if src_mode == "REPEATED" or src_type == "RECORD":
-        return f"TO_JSON_STRING({q(col)}) AS {q(col)}"
-    return f"CAST({q(col)} AS STRING) AS {q(col)}"
+    def _cast_expr(
+    col: str,
+    field: bigquery.SchemaField,
+    source_field: Optional[bigquery.SchemaField] = None,
+) -> str:
+    tgt_type = field.field_type.upper()
+    tgt_mode = (field.mode or "NULLABLE").upper()
+    src_type = (source_field.field_type.upper() if source_field else None)
+    src_mode = ((source_field.mode or "NULLABLE").upper() if source_field else None)
 
-    # Serialización forzada a JSON en columnas problemáticas
+    # id como STRING para clave MERGE
+    if col == "id":
+        if src_mode == "REPEATED" or src_type == "RECORD":
+            return f"TO_JSON_STRING({q(col)}) AS {q(col)}"
+        return f"CAST({q(col)} AS STRING) AS {q(col)}"
+
+    # Fuerza JSON en campos problemáticos que vienen REPEATED/RECORD
     if col in ALWAYS_JSONIFY:
-    return f"TO_JSON_STRING({q(col)}) AS {q(col)}"
+        return f"TO_JSON_STRING({q(col)}) AS {q(col)}"
 
     if tgt_mode == "REPEATED" and tgt_type != "RECORD":
         return f"SAFE_CAST({q(col)} AS ARRAY<{tgt_type}>) AS {q(col)}"
@@ -308,6 +319,7 @@ def _cast_expr(
 
     if tgt_type == "STRING":
         if src_mode == "REPEATED" and src_type == "STRING":
+            # Si no está en ALWAYS_JSONIFY, podrías aplastar a string:
             return f"ARRAY_TO_STRING({q(col)}, ',') AS {q(col)}"
         if src_mode == "REPEATED" or src_type == "RECORD":
             return f"TO_JSON_STRING({q(col)}) AS {q(col)}"

@@ -323,6 +323,23 @@ def _cast_expr(col: str,
                         f"ARRAY(SELECT TO_JSON_STRING(x) FROM UNNEST({q(col)}) AS x) AS {q(col)}"
                     )
 
+                # Fallback para arreglos que contienen JSON serializado (ej. ["[1,2,3]", ...])
+                if inner_type == "STRING" and not child_fields:
+                    jsonified = "TO_JSON(SAFE.PARSE_JSON(x))"
+                    return (
+                        "ARRAY(\n"
+                        f"  SELECT SAFE_CAST(elem AS {tgt_type})\n"
+                        f"  FROM UNNEST({q(col)}) AS x\n"
+                        "  CROSS JOIN UNNEST(\n"  # desanidar arreglos JSON si aplica
+                        f"    IF(JSON_TYPE({jsonified}) = 'array',\n"
+                        f"       JSON_VALUE_ARRAY({jsonified}),\n"
+                        "       [x]\n"
+                        "    )\n"
+                        "  ) AS elem\n"
+                        ") AS "
+                        f"{q(col)}"
+                    )
+
             return f"ARRAY(SELECT SAFE_CAST(x AS {tgt_type}) FROM UNNEST({q(col)}) AS x) AS {q(col)}"
         # Si la fuente es un valor único (escalar), envolverlo en un array
         else:

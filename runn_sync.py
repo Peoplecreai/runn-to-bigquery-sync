@@ -293,82 +293,36 @@ def _cast_expr(col: str,
     src_type = (src_field.field_type if src_field else "STRING").upper()
     src_mode = (src_field.mode if src_field else "NULLABLE").upper()
 
-    # id como STRING para join del MERGE
+    # ID como STRING para el JOIN del MERGE
     if col == "id":
         return f"CAST({q(col)} AS STRING) AS {q(col)}"
 
-    # JSON de destino
+    # El destino es REPETIDO (ARRAY)
+    if tgt_mode == "REPEATED":
+        # Si la fuente también es REPETIDO, simplemente castear los elementos internos
+        if src_mode == "REPEATED":
+            return f"ARRAY(SELECT SAFE_CAST(x AS {tgt_type}) FROM UNNEST({q(col)}) AS x) AS {q(col)}"
+        # Si la fuente es un valor único (escalar), envolverlo en un array
+        else:
+            return f"CASE WHEN {q(col)} IS NULL THEN NULL ELSE [SAFE_CAST({q(col)} AS {tgt_type})] END AS {q(col)}"
+
+    # El destino es JSON
     if tgt_type == "JSON":
         if src_type == "JSON":
             return f"{q(col)} AS {q(col)}"
         if src_type == "RECORD" or src_mode == "REPEATED":
             return f"TO_JSON({q(col)}) AS {q(col)}"
-        if src_type == "STRING":
-            return f"SAFE_CAST({q(col)} AS JSON) AS {q(col)}"
-        return f"TO_JSON({q(col)}) AS {q(col)}"
+        # Para strings, intentar parsearlos como JSON; para otros, convertirlos
+        return f"SAFE.PARSE_JSON(CAST({q(col)} AS STRING)) AS {q(col)}"
 
-    # REPEATED no-RECORD de destino: construir arreglo saneando tipos
-    if tgt_mode == "REPEATED" and tgt_type != "RECORD":
-        if src_mode == "REPEATED":
-            return (
-                f"ARRAY(SELECT SAFE_CAST(x AS {tgt_type}) FROM UNNEST({q(col)}) AS x) "
-                f"AS {q(col)}"
-            )
-        return (
-            f"CASE WHEN {q(col)} IS NULL THEN CAST(NULL AS ARRAY<{tgt_type}>) "
-            f"ELSE [SAFE_CAST({q(col)} AS {tgt_type})] END AS {q(col)}"
-        )
-
-    # REPEATED RECORD de destino: pasar tal cual
-    if tgt_mode == "REPEATED" and tgt_type == "RECORD":
-        return f"{q(col)} AS {q(col)}"
-
-    # Casts escalares
-    if tgt_type in {"INT64", "INTEGER"}:
-        return f"SAFE_CAST({q(col)} AS INT64) AS {q(col)}"
-    if tgt_type in {"FLOAT64", "FLOAT"}:
-        return f"SAFE_CAST({q(col)} AS FLOAT64) AS {q(col)}"
-    if tgt_type in {"BOOL", "BOOLEAN"}:
-        return f"SAFE_CAST({q(col)} AS BOOL) AS {q(col)}"
-    if tgt_type == "DATE":
-        return f"SAFE_CAST({q(col)} AS DATE) AS {q(col)}"
-    if tgt_type == "TIMESTAMP":
-        return f"SAFE_CAST({q(col)} AS TIMESTAMP) AS {q(col)}"
-    if tgt_type == "DATETIME":
-        return f"SAFE_CAST({q(col)} AS DATETIME) AS {q(col)}"
-
-    # STRING de destino (asegurándonos de que no sea REPEATED)
-    if tgt_type == "STRING" and tgt_mode != "REPEATED":
-        if src_type == "RECORD" or src_mode == "REPEATED":
-            return f"TO_JSON_STRING({q(col)}) AS {q(col)}"
-        return f"CAST({q(col)} AS STRING) AS {q(col)}"
-
-    # Fallback: pasar tal cual
-    return f"{q(col)} AS {q(col)}"
-
-    # Casts escalares
-    if tgt_type in {"INT64", "INTEGER"}:
-        return f"SAFE_CAST({q(col)} AS INT64) AS {q(col)}"
-    if tgt_type in {"FLOAT64", "FLOAT"}:
-        return f"SAFE_CAST({q(col)} AS FLOAT64) AS {q(col)}"
-    if tgt_type in {"BOOL", "BOOLEAN"}:
-        return f"SAFE_CAST({q(col)} AS BOOL) AS {q(col)}"
-    if tgt_type == "DATE":
-        return f"SAFE_CAST({q(col)} AS DATE) AS {q(col)}"
-    if tgt_type == "TIMESTAMP":
-        return f"SAFE_CAST({q(col)} AS TIMESTAMP) AS {q(col)}"
-    if tgt_type == "DATETIME":
-        return f"SAFE_CAST({q(col)} AS DATETIME) AS {q(col)}"
-
-    # STRING de destino
+    # El destino es STRING (y no es REPEATED)
     if tgt_type == "STRING":
-        # Si la fuente es RECORD o REPEATED, evitar cast directo
-        if src_type == "RECORD" or src_mode == "REPEATED":
+        if src_mode == "REPEATED" or src_type == "RECORD":
             return f"TO_JSON_STRING({q(col)}) AS {q(col)}"
         return f"CAST({q(col)} AS STRING) AS {q(col)}"
 
-    # Fallback: pasar tal cual
-    return f"{q(col)} AS {q(col)}"
+    # Para cualquier otro tipo de destino escalar (INT64, BOOL, etc.)
+    return f"SAFE_CAST({q(col)} AS {tgt_type}) AS {q(col)}"
 
 def _can_widen_type(src: str, tgt: str) -> bool:
     if src == tgt:

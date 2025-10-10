@@ -301,6 +301,28 @@ def _cast_expr(col: str,
     if tgt_mode == "REPEATED":
         # Si la fuente también es REPETIDO, simplemente castear los elementos internos
         if src_mode == "REPEATED":
+            if src_field is not None:
+                inner_type = (src_field.field_type or "").upper()
+                child_fields = list(getattr(src_field, "fields", []) or [])
+                repeated_children = [
+                    f for f in child_fields if (f.mode or "NULLABLE").upper() == "REPEATED"
+                ]
+
+                # Detectar arreglos anidados (array de arrays) y aplanar completamente
+                if repeated_children:
+                    child = repeated_children[0]
+                    child_ref = f"x.{q(child.name)}"
+                    return (
+                        f"ARRAY(SELECT SAFE_CAST(y AS {tgt_type}) "
+                        f"FROM UNNEST({q(col)}) AS x, UNNEST({child_ref}) AS y) AS {q(col)}"
+                    )
+
+                # Si los elementos son RECORD/JSON, serializarlos en lugar de castear a STRING
+                if inner_type in {"RECORD", "JSON"} or child_fields:
+                    return (
+                        f"ARRAY(SELECT TO_JSON_STRING(x) FROM UNNEST({q(col)}) AS x) AS {q(col)}"
+                    )
+
             return f"ARRAY(SELECT SAFE_CAST(x AS {tgt_type}) FROM UNNEST({q(col)}) AS x) AS {q(col)}"
         # Si la fuente es un valor único (escalar), envolverlo en un array
         else:

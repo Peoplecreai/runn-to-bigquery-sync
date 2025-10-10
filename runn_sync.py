@@ -293,13 +293,13 @@ def _cast_expr(
 
     # id como STRING para clave MERGE
     if col == "id":
-        if src_mode == "REPEATED" or src_type == "RECORD":
-            return f"TO_JSON_STRING({q(col)}) AS {q(col)}"
-        return f"CAST({q(col)} AS STRING) AS {q(col)}"
+    if src_mode == "REPEATED" or src_type == "RECORD":
+        return f"TO_JSON_STRING({q(col)}) AS {q(col)}"
+    return f"CAST({q(col)} AS STRING) AS {q(col)}"
 
     # Serialización forzada a JSON en columnas problemáticas
     if col in ALWAYS_JSONIFY:
-        return f"TO_JSON_STRING({q(col)}) AS {q(col)}"
+    return f"TO_JSON_STRING({q(col)}) AS {q(col)}"
 
     if tgt_mode == "REPEATED" and tgt_type != "RECORD":
         return f"SAFE_CAST({q(col)} AS ARRAY<{tgt_type}>) AS {q(col)}"

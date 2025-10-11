@@ -19,16 +19,26 @@ def sync_endpoint(client, name, path):
     print(f"[{name}] upsert: {len(rows)} filas")
     return len(rows)
 
-def main():
+def run_sync():
     cfg_path = os.getenv("ENDPOINTS_FILE", "endpoints.yaml")
     with open(cfg_path, "r") as f:
         cfg = yaml.safe_load(f)
     endpoints = cfg["endpoints"]
     client = get_bq_client(PROJECT)
+    per_endpoint = {}
     total = 0
     for name, meta in endpoints.items():
-        total += sync_endpoint(client, name, meta["path"])
-    print(f"Total filas procesadas: {total}")
+        processed = sync_endpoint(client, name, meta["path"])
+        per_endpoint[name] = processed
+        total += processed
+    return {"total_rows": total, "per_endpoint": per_endpoint}
+
+
+def main():
+    result = run_sync()
+    print(f"Total filas procesadas: {result['total_rows']}")
+    return 0
+
 
 if __name__ == "__main__":
     sys.exit(main())

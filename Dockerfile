@@ -21,4 +21,4 @@ USER appuser
 
 # Cloud Run Jobs no necesita servidor HTTP
 # La ejecución acepta args al momento de correr el job
-ENTRYPOINT ["python", "runn_sync.py"]
+ENTRYPOINT ["python", "main.py"]

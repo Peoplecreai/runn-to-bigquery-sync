@@ -314,31 +314,35 @@ def _null_expr(field: bigquery.SchemaField) -> str:
 def _cast_expr(col: str,
                tgt_field: bigquery.SchemaField,
                src_field: Optional[bigquery.SchemaField]) -> str:
-    """
-    Proyecta `col` desde staging a destino, respetando tipos/modos y usando
-    TO_JSON/SAFE_CAST cuando aplica. Evita CAST inválidos de ARRAY/RECORD → STRING.
-    """
     tgt_type = (tgt_field.field_type or "STRING").upper()
     tgt_mode = (tgt_field.mode or "NULLABLE").upper()
     src_type = (src_field.field_type if src_field else "STRING").upper()
     src_mode = (src_field.mode if src_field else "NULLABLE").upper()
 
     # ID como STRING para el JOIN del MERGE
-    if col == "id" and tgt_type == "STRING":
-        if src_mode == "REPEATED":
-            jsonified = f"TO_JSON({q(col)}[SAFE_OFFSET(0)])"
-            return (
-                "CASE\n"
-                f"  WHEN {q(col)} IS NULL OR COALESCE(ARRAY_LENGTH({q(col)}), 0) = 0 THEN NULL\n"
-                f"  WHEN JSON_TYPE({jsonified}) = 'string' THEN JSON_VALUE({jsonified})\n"
-                f"  ELSE TO_JSON_STRING({q(col)}[SAFE_OFFSET(0)])\n"
-                f"END AS {q(col)}"
-            )
-        return f"CAST({q(col)} AS STRING) AS {q(col)}"
+    if col == "id":
+        if tgt_type == "STRING":
+            if src_mode == "REPEATED":
+                has_repeated_children = False
+                if src_field is not None:
+                    child_fields = getattr(src_field, "fields", []) or []
+                    has_repeated_children = any(
+                        (child.mode or "NULLABLE").upper() == "REPEATED"
+                        for child in child_fields
+                    )
+                    if child_fields:
+                        return f"TO_JSON_STRING({q(col)}[SAFE_OFFSET(0)]) AS {q(col)}"
+
+                if has_repeated_children:
+                    return f"TO_JSON_STRING({q(col)}[SAFE_OFFSET(0)]) AS {q(col)}"
+
+                return f"SAFE_CAST({q(col)}[SAFE_OFFSET(0)] AS STRING) AS {q(col)}"
+            return f"CAST({q(col)} AS STRING) AS {q(col)}"
+
+        return f"SAFE_CAST({q(col)} AS {tgt_type}) AS {q(col)}"
 
     # El destino es REPETIDO (ARRAY)
     if tgt_mode == "REPEATED":
-        # Si la fuente también es REPETIDO, simplemente castear los elementos internos
         if src_mode == "REPEATED":
             if tgt_type in {"STRUCT", "RECORD"}:
                 return f"{q(col)} AS {q(col)}"
@@ -349,69 +353,59 @@ def _cast_expr(col: str,
                     f for f in child_fields if (f.mode or "NULLABLE").upper() == "REPEATED"
                 ]
 
-                # Detectar arreglos anidados (array de arrays) y aplanar completamente
                 if repeated_children:
                     child = repeated_children[0]
-                    child_ref = f"x.{q(child.name)}"
+                    child_ref = f"x.{q(child.name)}" if child.name else "x[ORDINAL(1)]"
                     return (
                         f"ARRAY(SELECT SAFE_CAST(y AS {tgt_type}) "
                         f"FROM UNNEST({q(col)}) AS x, UNNEST({child_ref}) AS y) AS {q(col)}"
                     )
 
-                # Si los elementos son RECORD/JSON, serializarlos en lugar de castear a STRING
                 if inner_type in {"RECORD", "JSON"} or child_fields:
                     return (
                         f"ARRAY(SELECT TO_JSON_STRING(x) FROM UNNEST({q(col)}) AS x) AS {q(col)}"
                     )
 
-                # Fallback para arreglos que contienen JSON serializado (ej. ["[1,2,3]", ...])
                 if inner_type == "STRING" and not child_fields:
                     jsonified = "COALESCE(TO_JSON(SAFE.PARSE_JSON(x)), TO_JSON(x))"
                     elem_scalar = (
                         "CASE JSON_TYPE(elem)\n"
-                        "         WHEN 'null' THEN NULL\n"
-                        "         WHEN 'string' THEN JSON_VALUE(elem)\n"
-                        "         WHEN 'number' THEN JSON_VALUE(elem)\n"
-                        "         WHEN 'boolean' THEN JSON_VALUE(elem)\n"
-                        "         ELSE TO_JSON_STRING(elem)\n"
-                        "       END"
+                        "  WHEN 'null' THEN NULL\n"
+                        "  WHEN 'string' THEN JSON_VALUE(elem)\n"
+                        "  WHEN 'number' THEN JSON_VALUE(elem)\n"
+                        "  WHEN 'boolean' THEN JSON_VALUE(elem)\n"
+                        "  ELSE TO_JSON_STRING(elem)\n"
+                        "END"
                     )
                     return (
                         "ARRAY(\n"
                         f"  SELECT SAFE_CAST({elem_scalar} AS {tgt_type})\n"
                         f"  FROM UNNEST({q(col)}) AS x\n"
-                        "  CROSS JOIN UNNEST(\n"  # desanidar arreglos JSON si aplica
+                        "  CROSS JOIN UNNEST(\n"
                         f"    CASE\n"
                         f"      WHEN JSON_TYPE({jsonified}) = 'array' THEN JSON_QUERY_ARRAY({jsonified})\n"
                         f"      ELSE [ {jsonified} ]\n"
                         f"    END\n"
-                        "    )\n"
                         "  ) AS elem\n"
-                        ") AS "
-                        f"{q(col)}"
+                        f") AS {q(col)}"
                     )
 
             return f"ARRAY(SELECT SAFE_CAST(x AS {tgt_type}) FROM UNNEST({q(col)}) AS x) AS {q(col)}"
-        # Si la fuente es un valor único (escalar), envolverlo en un array
         else:
             return f"CASE WHEN {q(col)} IS NULL THEN NULL ELSE [SAFE_CAST({q(col)} AS {tgt_type})] END AS {q(col)}"
 
-    # El destino es JSON
     if tgt_type == "JSON":
         if src_type == "JSON":
             return f"{q(col)} AS {q(col)}"
         if src_type == "RECORD" or src_mode == "REPEATED":
             return f"TO_JSON({q(col)}) AS {q(col)}"
-        # Para strings, intentar parsearlos como JSON; para otros, convertirlos
         return f"SAFE.PARSE_JSON(CAST({q(col)} AS STRING)) AS {q(col)}"
 
-    # El destino es STRING (y no es REPEATED)
     if tgt_type == "STRING":
         if src_mode == "REPEATED" or src_type == "RECORD":
             return f"TO_JSON_STRING({q(col)}) AS {q(col)}"
         return f"CAST({q(col)} AS STRING) AS {q(col)}"
 
-    # Para cualquier otro tipo de destino escalar (INT64, BOOL, etc.)
     return f"SAFE_CAST({q(col)} AS {tgt_type}) AS {q(col)}"
 
 def _can_widen_type(src: str, tgt: str) -> bool:

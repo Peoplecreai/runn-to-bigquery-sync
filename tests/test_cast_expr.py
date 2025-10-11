@@ -21,7 +21,7 @@ def test_cast_expr_id_scalar_source_string_target():
 
     expr = _cast_expr("id", tgt, src)
 
-    assert expr == "CAST(`id` AS STRING) AS `id`"
+    assert expr == "SAFE_CAST(`id` AS STRING) AS `id`"
 
 
 def test_cast_expr_id_repeated_source_string_target():

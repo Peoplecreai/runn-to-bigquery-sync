@@ -321,24 +321,17 @@ def _cast_expr(col: str,
 
     # ID como STRING para el JOIN del MERGE
     if col == "id":
-        if tgt_type == "STRING":
-            if src_mode == "REPEATED":
-                has_repeated_children = False
-                if src_field is not None:
-                    child_fields = getattr(src_field, "fields", []) or []
-                    has_repeated_children = any(
-                        (child.mode or "NULLABLE").upper() == "REPEATED"
-                        for child in child_fields
-                    )
-                    if child_fields:
-                        return f"TO_JSON_STRING({q(col)}[SAFE_OFFSET(0)]) AS {q(col)}"
-
-                if has_repeated_children:
+        if src_mode == "REPEATED":
+            has_repeated_children = False
+            if src_field is not None:
+                child_fields = getattr(src_field, "fields", []) or []
+                has_repeated_children = any(
+                    (child.mode or "NULLABLE").upper() == "REPEATED"
+                    for child in child_fields
+                )
+                if child_fields or has_repeated_children:
                     return f"TO_JSON_STRING({q(col)}[SAFE_OFFSET(0)]) AS {q(col)}"
-
-                return f"SAFE_CAST({q(col)}[SAFE_OFFSET(0)] AS STRING) AS {q(col)}"
-            return f"CAST({q(col)} AS STRING) AS {q(col)}"
-
+            return f"SAFE_CAST({q(col)}[SAFE_OFFSET(0)] AS {tgt_type}) AS {q(col)}"
         return f"SAFE_CAST({q(col)} AS {tgt_type}) AS {q(col)}"
 
     # El destino es REPETIDO (ARRAY)
@@ -382,10 +375,10 @@ def _cast_expr(col: str,
                         f"  SELECT SAFE_CAST({elem_scalar} AS {tgt_type})\n"
                         f"  FROM UNNEST({q(col)}) AS x\n"
                         "  CROSS JOIN UNNEST(\n"
-                        f"    CASE\n"
+                        "    CASE\n"
                         f"      WHEN JSON_TYPE({jsonified}) = 'array' THEN JSON_QUERY_ARRAY({jsonified})\n"
                         f"      ELSE [ {jsonified} ]\n"
-                        f"    END\n"
+                        "    END\n"
                         "  ) AS elem\n"
                         f") AS {q(col)}"
                     )

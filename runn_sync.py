@@ -84,7 +84,7 @@ COLLS: Dict[str, Union[str, Tuple[str, Dict[str, str]]]] = {
 # Esquemas con tipos fijos (evita autodetecciones inconsistentes)
 # -----------------------------------------------------------------------------
 SCHEMA_OVERRIDES: Dict[str, List[bigquery.SchemaField]] = {
-    # Nativo: managers y tags serializados a STRING (JSON); references JSON
+    # Nativo: managers y tags REPEATED STRING; references JSON
     "runn_people": [
         bigquery.SchemaField("id", "STRING"),
         bigquery.SchemaField("firstName", "STRING"),
@@ -95,8 +95,8 @@ SCHEMA_OVERRIDES: Dict[str, List[bigquery.SchemaField]] = {
         bigquery.SchemaField("holidaysGroupId", "INT64"),
         bigquery.SchemaField("updatedAt", "TIMESTAMP"),
         bigquery.SchemaField("createdAt", "TIMESTAMP"),
-        bigquery.SchemaField("managers", "STRING"),  # Serializado a JSON string
-        bigquery.SchemaField("tags", "STRING"),  # Serializado a JSON string
+        bigquery.SchemaField("managers", "STRING", mode="REPEATED"),
+        bigquery.SchemaField("tags", "STRING", mode="REPEATED"),
         bigquery.SchemaField("references", "JSON"),
     ],
     "runn_actuals": [
@@ -310,6 +310,7 @@ def _cast_expr(col: str,
     tgt_mode = (tgt_field.mode or "NULLABLE").upper()
     src_type = (src_field.field_type if src_field else "STRING").upper()
     src_mode = (src_field.mode if src_field else "NULLABLE").upper()
+    logger.info(f"Generating expr for {col}: tgt_mode={tgt_mode}, src_mode={src_mode}, tgt_type={tgt_type}, src_type={src_type}")
 
     # ID como STRING para el JOIN del MERGE
     if col == "id":
@@ -321,18 +322,13 @@ def _cast_expr(col: str,
                     (child.mode or "NULLABLE").upper() == "REPEATED"
                     for child in child_fields
                 )
-                if child_fields:
+                if child_fields or has_repeated_children:
                     return f"TO_JSON_STRING({q(col)}[SAFE_OFFSET(0)]) AS {q(col)}"
-
-            if has_repeated_children:
-                return f"TO_JSON_STRING({q(col)}[SAFE_OFFSET(0)]) AS {q(col)}"
-
-            return f"SAFE_CAST({q(col)}[SAFE_OFFSET(0)] AS STRING) AS {q(col)}"
-        return f"CAST({q(col)} AS STRING) AS {q(col)}"
+            return f"SAFE_CAST({q(col)}[SAFE_OFFSET(0)] AS {tgt_type}) AS {q(col)}"
+        return f"SAFE_CAST({q(col)} AS {tgt_type}) AS {q(col)}"
 
     # El destino es REPETIDO (ARRAY)
     if tgt_mode == "REPEATED":
-        # Si la fuente también es REPETIDO, simplemente castear los elementos internos
         if src_mode == "REPEATED":
             if tgt_type in {"STRUCT", "RECORD"}:
                 return f"{q(col)} AS {q(col)}"
@@ -343,7 +339,6 @@ def _cast_expr(col: str,
                     f for f in child_fields if (f.mode or "NULLABLE").upper() == "REPEATED"
                 ]
 
-                # Detectar arreglos anidados (array de arrays) y aplanar completamente
                 if repeated_children:
                     child = repeated_children[0]
                     child_ref = f"x.{q(child.name)}" if child.name else "x[ORDINAL(1)]"
@@ -352,41 +347,36 @@ def _cast_expr(col: str,
                         f"FROM UNNEST({q(col)}) AS x, UNNEST({child_ref}) AS y) AS {q(col)}"
                     )
 
-                # Si los elementos son RECORD/JSON, serializarlos en lugar de castear a STRING
                 if inner_type in {"RECORD", "JSON"} or child_fields:
                     return (
                         f"ARRAY(SELECT TO_JSON_STRING(x) FROM UNNEST({q(col)}) AS x) AS {q(col)}"
                     )
 
-                # Fallback para arreglos que contienen JSON serializado (ej. ["[1,2,3]", ...])
                 if inner_type == "STRING" and not child_fields:
                     jsonified = "COALESCE(TO_JSON(SAFE.PARSE_JSON(x)), TO_JSON(x))"
                     elem_scalar = (
                         "CASE JSON_TYPE(elem)\n"
-                        "         WHEN 'null' THEN NULL\n"
-                        "         WHEN 'string' THEN JSON_VALUE(elem)\n"
-                        "         WHEN 'number' THEN JSON_VALUE(elem)\n"
-                        "         WHEN 'boolean' THEN JSON_VALUE(elem)\n"
-                        "         ELSE TO_JSON_STRING(elem)\n"
-                        "       END"
+                        "  WHEN 'null' THEN NULL\n"
+                        "  WHEN 'string' THEN JSON_VALUE(elem)\n"
+                        "  WHEN 'number' THEN JSON_VALUE(elem)\n"
+                        "  WHEN 'boolean' THEN JSON_VALUE(elem)\n"
+                        "  ELSE TO_JSON_STRING(elem)\n"
+                        "END"
                     )
                     return (
                         "ARRAY(\n"
                         f"  SELECT SAFE_CAST({elem_scalar} AS {tgt_type})\n"
                         f"  FROM UNNEST({q(col)}) AS x\n"
-                        "  CROSS JOIN UNNEST(\n"  # desanidar arreglos JSON si aplica
+                        "  CROSS JOIN UNNEST(\n"
                         f"    CASE\n"
                         f"      WHEN JSON_TYPE({jsonified}) = 'array' THEN JSON_QUERY_ARRAY({jsonified})\n"
                         f"      ELSE [ {jsonified} ]\n"
                         f"    END\n"
-                        "    )\n"
                         "  ) AS elem\n"
-                        ") AS "
-                        f"{q(col)}"
+                        ") AS {q(col)}"
                     )
 
             return f"ARRAY(SELECT SAFE_CAST(x AS {tgt_type}) FROM UNNEST({q(col)}) AS x) AS {q(col)}"
-        # Si la fuente es un valor único (escalar), envolverlo en un array
         else:
             return f"CASE WHEN {q(col)} IS NULL THEN NULL ELSE [SAFE_CAST({q(col)} AS {tgt_type})] END AS {q(col)}"
 
@@ -396,7 +386,6 @@ def _cast_expr(col: str,
             return f"{q(col)} AS {q(col)}"
         if src_type == "RECORD" or src_mode == "REPEATED":
             return f"TO_JSON({q(col)}) AS {q(col)}"
-        # Para strings, intentar parsearlos como JSON; para otros, convertirlos
         return f"SAFE.PARSE_JSON(CAST({q(col)} AS STRING)) AS {q(col)}"
 
     # El destino es STRING (y no es REPEATED)
@@ -427,6 +416,7 @@ def _reconcile_existing_table_schema(tgt_id: str, desired: List[bigquery.SchemaF
     want_map = _schema_to_map(desired)
 
     alters: List[str] = []
+    mode_mismatch = False
     for name, want in want_map.items():
         if name in ex_map:
             ex = ex_map[name]
@@ -435,8 +425,8 @@ def _reconcile_existing_table_schema(tgt_id: str, desired: List[bigquery.SchemaF
             ex_m = (ex.mode or "NULLABLE").upper()
             want_m = (want.mode or "NULLABLE").upper()
 
-            # Modo REPEATED no se puede mutar; se intentará recrear si está vacío
             if ex_m != want_m:
+                mode_mismatch = True
                 continue
 
             if ex_t != want_t and _can_widen_type(ex_t, want_t):
@@ -446,6 +436,14 @@ def _reconcile_existing_table_schema(tgt_id: str, desired: List[bigquery.SchemaF
             mode = (want.mode or "NULLABLE").upper()
             mode_sql = " REPEATED" if mode == "REPEATED" else ""
             alters.append(f"ADD COLUMN {q(name)} {want_t}{mode_sql}")
+
+    if mode_mismatch:
+        logger.warning("Mismatch en modo detectado para %s. Recreando tabla (pérdida de datos si no vacía).", tgt_id)
+        bq.delete_table(tgt_id, not_found_ok=True)
+        new_tbl = bigquery.Table(tgt_id, schema=desired)
+        new_tbl.location = BQ_LOCATION
+        bq.create_table(new_tbl)
+        return desired
 
     if not alters:
         return existing
@@ -557,7 +555,7 @@ def load_merge(table_base: str, rows: List[Dict], bq: bigquery.Client) -> int:
         {select_sql}
       FROM `{stg}`
     ) S
-    ON T.{q('id')} = S.{q('id')}
+    ON SAFE_CAST(T.{q('id')} AS STRING) = S.{q('id')}
     """
     if set_clause:
         merge_sql += f"""

@@ -1,0 +1,38 @@
+dataset: people_analytics
+endpoints:
+  runn_people:
+    path: /people/
+  runn_projects:
+    path: /projects/
+  runn_clients:
+    path: /clients/
+  runn_roles:
+    path: /roles/
+  runn_teams:
+    path: /teams/
+  runn_skills:
+    path: /skills/
+  runn_people_tags:
+    path: /people-tags/
+  runn_project_tags:
+    path: /project-tags/
+  runn_rate_cards:
+    path: /rate-cards/
+  runn_workstreams:
+    path: /workstreams/
+  runn_assignments:
+    path: /assignments/
+  runn_actuals:
+    path: /actuals/
+  runn_timeoffs_leave:
+    path: /time-offs/leave/
+  runn_timeoffs_rostered:
+    path: /time-offs/rostered/
+  runn_timeoffs_holidays:
+    path: /time-offs/holidays/
+  runn_holiday_groups:
+    path: /holiday-groups/
+  runn_placeholders:
+    path: /placeholders/
+  runn_contracts:
+    path: /contracts/

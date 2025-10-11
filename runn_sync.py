@@ -84,9 +84,9 @@ COLLS: Dict[str, Union[str, Tuple[str, Dict[str, str]]]] = {
 # Esquemas con tipos fijos (evita autodetecciones inconsistentes)
 # -----------------------------------------------------------------------------
 SCHEMA_OVERRIDES: Dict[str, List[bigquery.SchemaField]] = {
-    # Nativo: managers y tags REPEATED STRING; references JSON
+    # Nativo: managers y tags REPEATED STRING; references RECORD
     "runn_people": [
-        bigquery.SchemaField("id", "STRING"),
+        bigquery.SchemaField("id", "INT64"),
         bigquery.SchemaField("firstName", "STRING"),
         bigquery.SchemaField("lastName", "STRING"),
         bigquery.SchemaField("email", "STRING"),
@@ -97,7 +97,15 @@ SCHEMA_OVERRIDES: Dict[str, List[bigquery.SchemaField]] = {
         bigquery.SchemaField("createdAt", "TIMESTAMP"),
         bigquery.SchemaField("managers", "STRING", mode="REPEATED"),
         bigquery.SchemaField("tags", "STRING", mode="REPEATED"),
-        bigquery.SchemaField("references", "JSON"),
+        bigquery.SchemaField(
+            "references",
+            "RECORD",
+            mode="REPEATED",
+            fields=[
+                bigquery.SchemaField("externalId", "STRING"),
+                bigquery.SchemaField("referenceName", "STRING"),
+            ],
+        ),
     ],
     "runn_actuals": [
         bigquery.SchemaField("id", "STRING"),
@@ -316,7 +324,7 @@ def _cast_expr(col: str,
     src_mode = (src_field.mode if src_field else "NULLABLE").upper()
 
     # ID como STRING para el JOIN del MERGE
-    if col == "id":
+    if col == "id" and tgt_type == "STRING":
         if src_mode == "REPEATED":
             jsonified = f"TO_JSON({q(col)}[SAFE_OFFSET(0)])"
             return (

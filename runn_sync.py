@@ -84,7 +84,7 @@ COLLS: Dict[str, Union[str, Tuple[str, Dict[str, str]]]] = {
 # Esquemas con tipos fijos (evita autodetecciones inconsistentes)
 # -----------------------------------------------------------------------------
 SCHEMA_OVERRIDES: Dict[str, List[bigquery.SchemaField]] = {
-    # Nativo: managers y tags REPEATED STRING; references JSON
+    # managers y tags como REPEATED STRING; references como JSON
     "runn_people": [
         bigquery.SchemaField("id", "STRING"),
         bigquery.SchemaField("firstName", "STRING"),
@@ -303,43 +303,39 @@ def _null_expr(field: bigquery.SchemaField) -> str:
         return f"CAST(NULL AS JSON) AS {q(name)}"
     return f"CAST(NULL AS {field_type}) AS {q(name)}"
 
-def _cast_expr(col: str,
-               tgt_field: bigquery.SchemaField,
-               src_field: Optional[bigquery.SchemaField]) -> str:
+def _cast_expr(
+    col: str,
+    tgt_field: bigquery.SchemaField,
+    src_field: Optional[bigquery.SchemaField],
+) -> str:
+    """
+    Genera una expresión SELECT que castea/convierte la columna de staging
+    al tipo/mode del destino.
+    """
     tgt_type = (tgt_field.field_type or "STRING").upper()
     tgt_mode = (tgt_field.mode or "NULLABLE").upper()
     src_type = (src_field.field_type if src_field else "STRING").upper()
     src_mode = (src_field.mode if src_field else "NULLABLE").upper()
 
-    # --- id: siempre STRING ---
+    # Clave MERGE: id siempre STRING (no array)
     if col == "id":
         if src_mode == "REPEATED":
-            return f"SAFE_CAST({q(col)}[SAFE_OFFSET(0)] AS STRING) AS {q(col)}"
-        return f"SAFE_CAST({q(col)} AS STRING) AS {q(col)}"
+            # toma primer elemento como string seguro
+            return f"CAST({q(col)}[SAFE_OFFSET(0)] AS STRING) AS {q(col)}"
+        return f"CAST({q(col)} AS STRING) AS {q(col)}"
 
-    # --- managers/tags: siempre ARRAY<STRING> ---
-    if col in {"managers", "tags"}:
-        if tgt_mode != "REPEATED":
-            # por si el stg viene raro, garantizamos salida no repetida válida
-            if src_mode == "REPEATED":
-                return f"TO_JSON_STRING({q(col)}) AS {q(col)}"
-            return f"CAST({q(col)} AS STRING) AS {q(col)}"
-        # destino REPEATED
-        if src_mode == "REPEATED":
-            return f"ARRAY(SELECT CAST(x AS STRING) FROM UNNEST({q(col)}) AS x) AS {q(col)}"
-        else:
-            return f"CASE WHEN {q(col)} IS NULL THEN [] ELSE [CAST({q(col)} AS STRING)] END AS {q(col)}"
-
-    # --- destino REPEATED (arrays genéricos) ---
+    # Caso destino REPEATED
     if tgt_mode == "REPEATED":
         if src_mode == "REPEATED":
+            # castea cada elemento a tgt_type
             if tgt_type in {"STRUCT", "RECORD"}:
                 return f"{q(col)} AS {q(col)}"
             return f"ARRAY(SELECT SAFE_CAST(x AS {tgt_type}) FROM UNNEST({q(col)}) AS x) AS {q(col)}"
         else:
-            return f"CASE WHEN {q(col)} IS NULL THEN [] ELSE [SAFE_CAST({q(col)} AS {tgt_type})] END AS {q(col)}"
+            # wrap en array si viene escalar
+            return f"CASE WHEN {q(col)} IS NULL THEN NULL ELSE [SAFE_CAST({q(col)} AS {tgt_type})] END AS {q(col)}"
 
-    # --- destino JSON ---
+    # Caso destino JSON
     if tgt_type == "JSON":
         if src_type == "JSON":
             return f"{q(col)} AS {q(col)}"
@@ -347,13 +343,13 @@ def _cast_expr(col: str,
             return f"TO_JSON({q(col)}) AS {q(col)}"
         return f"SAFE.PARSE_JSON(CAST({q(col)} AS STRING)) AS {q(col)}"
 
-    # --- destino STRING escalar ---
+    # Caso destino STRING (no repeated)
     if tgt_type == "STRING":
         if src_mode == "REPEATED" or src_type == "RECORD":
             return f"TO_JSON_STRING({q(col)}) AS {q(col)}"
         return f"CAST({q(col)} AS STRING) AS {q(col)}"
 
-    # --- resto de escalares ---
+    # Resto de escalares: INT64, BOOL, FLOAT64, DATE, TIMESTAMP, DATETIME…
     return f"SAFE_CAST({q(col)} AS {tgt_type}) AS {q(col)}"
 
 def _can_widen_type(src: str, tgt: str) -> bool:
@@ -514,7 +510,7 @@ def load_merge(table_base: str, rows: List[Dict], bq: bigquery.Client) -> int:
         {select_sql}
       FROM `{stg}`
     ) S
-    ON T.{q('id')} = S.{q('id')}
+    ON SAFE_CAST(T.{q('id')} AS STRING) = S.{q('id')}
     """
     if set_clause:
         merge_sql += f"""

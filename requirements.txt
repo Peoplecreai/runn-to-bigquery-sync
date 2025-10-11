@@ -3,3 +3,4 @@ google-auth==2.*
 requests==2.*
 tenacity==8.*
 python-dateutil==2.*
+PyYAML==6.*

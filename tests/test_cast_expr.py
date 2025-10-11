@@ -15,7 +15,7 @@ def _field(name: str, field_type: str, *, mode: str = "NULLABLE") -> bigquery.Sc
     return bigquery.SchemaField(name, field_type, mode=mode)
 
 
-def test_cast_expr_id_scalar_source():
+def test_cast_expr_id_scalar_source_string_target():
     tgt = _field("id", "STRING")
     src = _field("id", "INT64")
 
@@ -24,7 +24,7 @@ def test_cast_expr_id_scalar_source():
     assert expr == "CAST(`id` AS STRING) AS `id`"
 
 
-def test_cast_expr_id_repeated_source():
+def test_cast_expr_id_repeated_source_string_target():
     tgt = _field("id", "STRING")
     src = _field("id", "INT64", mode="REPEATED")
 
@@ -39,7 +39,7 @@ def test_cast_expr_id_repeated_source():
     )
 
 
-def test_cast_expr_id_repeated_nested_source():
+def test_cast_expr_id_repeated_nested_source_string_target():
     tgt = _field("id", "STRING")
     src = bigquery.SchemaField(
         "id",
@@ -57,3 +57,12 @@ def test_cast_expr_id_repeated_nested_source():
         "  ELSE TO_JSON_STRING(`id`[SAFE_OFFSET(0)])\n"
         "END AS `id`"
     )
+
+
+def test_cast_expr_id_scalar_int_target():
+    tgt = _field("id", "INT64")
+    src = _field("id", "INT64")
+
+    expr = _cast_expr("id", tgt, src)
+
+    assert expr == "SAFE_CAST(`id` AS INT64) AS `id`"

@@ -19,6 +19,5 @@ COPY . .
 RUN useradd -m appuser && chown -R appuser:appuser /app
 USER appuser
 
-# Cloud Run Jobs no necesita servidor HTTP
-# La ejecución acepta args al momento de correr el job
-ENTRYPOINT ["python", "main.py"]
+# Cloud Run service requires HTTP server listening on PORT
+ENTRYPOINT ["python", "runn_sync.py"]

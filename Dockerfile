@@ -19,6 +19,6 @@ COPY . .
 RUN useradd -m appuser && chown -R appuser:appuser /app
 USER appuser
 
-# Cloud Run Jobs no necesita servidor HTTP
-# La ejecución acepta args al momento de correr el job
-ENTRYPOINT ["python", "main.py"]
+# Punto de entrada dinámico: por defecto sirve HTTP, pero se puede
+# cambiar el modo con RUN_MODE=job/batch para ejecuciones puntuales
+ENTRYPOINT ["python", "entrypoint.py"]

@@ -121,6 +121,7 @@ BQ_PROJECT=your-gcp-project
 BQ_DATASET=people_analytics  # default
 CLOCKIFY_PAGE_SIZE=200  # default
 PORT=8080  # para HTTP server
+RUN_MODE=server  # server | job/batch
 ```
 
 Ver [.env.example](./.env.example) para más detalles.

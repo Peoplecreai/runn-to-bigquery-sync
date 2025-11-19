@@ -1,21 +1,31 @@
-# Migración de Runn a Clockify
+# Migración de Runn a Clockify (Arquitectura Híbrida)
 
 ## Resumen
 
-Este proyecto ha sido migrado de usar Runn API a Clockify API como fuente de datos. La migración mantiene la estructura de tablas en BigQuery para garantizar compatibilidad con Power BI y otros reportes existentes.
+Este proyecto utiliza una **arquitectura híbrida**:
+- **Clockify API** como fuente principal de datos
+- **Runn API** solo para datos de Time Off (leave, rostered) que no están disponibles en Clockify
+
+La migración mantiene la estructura de tablas en BigQuery para garantizar compatibilidad con Power BI y otros reportes existentes.
 
 ## Cambios Principales
 
 ### 1. Cliente API
 
-- **Antes**: `runn_client.py` - Cliente para Runn API
-- **Después**: `clockify_client.py` - Cliente para Clockify API
+- **Antes**: Solo `runn_client.py` - Cliente para Runn API
+- **Ahora**:
+  - `clockify_client.py` - Cliente principal para Clockify API
+  - `runn_client.py` - Se mantiene solo para endpoints de Time Off
 
-**Diferencias clave**:
+**Diferencias clave de Clockify**:
 - Autenticación: `Bearer {token}` → `X-Api-Key: {key}`
 - Paginación: Cursor-based → Page-based (page/page-size)
 - Base URL: `https://api.runn.io` → `https://api.clockify.me/api`
 - Workspace: Implícito → Requiere `CLOCKIFY_WORKSPACE_ID`
+
+**Runn se mantiene para**:
+- `runn_timeoffs_leave`
+- `runn_timeoffs_rostered`
 
 ### 2. Mapeo de Datos
 
@@ -34,6 +44,8 @@ Se creó `data_mapper.py` para transformar los datos de Clockify al formato comp
 | `runn_assignments` | `/assignments/` | `/v1/workspaces/{id}/scheduling/assignments` | ✅ Activo |
 | `runn_actuals` | `/actuals/` | `/v1/workspaces/{id}/reports/detailed` | ✅ Activo (Reports API) |
 | `runn_timeoffs_holidays` | `/time-offs/holidays/` | `/v1/workspaces/{id}/holidays` | ✅ Activo |
+| `runn_timeoffs_leave` | `/time-offs/leave/` | **Mantiene Runn API** | ✅ Activo (Runn) |
+| `runn_timeoffs_rostered` | `/time-offs/rostered/` | **Mantiene Runn API** | ✅ Activo (Runn) |
 
 #### Endpoints NO Mapeados (sin equivalente directo)
 
@@ -43,8 +55,6 @@ Se creó `data_mapper.py` para transformar los datos de Clockify al formato comp
 | `runn_teams` | Puede obtenerse de User Groups (requiere implementación adicional) |
 | `runn_skills` | No disponible en Clockify, usar custom fields |
 | `runn_rate_cards` | Las tasas están embebidas en projects/tasks |
-| `runn_timeoffs_leave` | Requiere implementación de Time-off API |
-| `runn_timeoffs_rostered` | No disponible |
 | `runn_holiday_groups` | No disponible (holidays son planos) |
 | `runn_placeholders` | No disponible |
 | `runn_contracts` | No disponible |
@@ -110,7 +120,7 @@ costRate.amount → cost_rate
 ### Nuevas Variables Requeridas
 
 ```bash
-# Clockify API Configuration
+# Clockify API Configuration (Primary source)
 CLOCKIFY_API_KEY=your_api_key_here
 CLOCKIFY_WORKSPACE_ID=your_workspace_id_here
 CLOCKIFY_BASE_URL=https://api.clockify.me/api  # Optional, defaults to this
@@ -118,13 +128,14 @@ CLOCKIFY_REPORTS_URL=https://reports.api.clockify.me  # Optional
 CLOCKIFY_PAGE_SIZE=200  # Optional, default 200
 ```
 
-### Variables Eliminadas
+### Variables que se Mantienen
 
 ```bash
-RUNN_API_TOKEN  # Ya no necesaria
-RUNN_BASE_URL  # Ya no necesaria
-RUNN_ACCEPT_VERSION  # Ya no necesaria
-RUNN_LIMIT  # Reemplazada por CLOCKIFY_PAGE_SIZE
+# Runn API Configuration (Solo para Time Off)
+RUNN_API_TOKEN=your_token_here  # TODAVÍA NECESARIA
+RUNN_BASE_URL=https://api.runn.io  # Optional
+RUNN_ACCEPT_VERSION=1.0.0  # Optional
+RUNN_LIMIT=200  # Optional
 ```
 
 ### Variables que Permanecen
@@ -171,8 +182,8 @@ Busca el workspace que necesitas en la respuesta JSON y copia su `id`.
 Actualiza los secrets en Google Cloud Secret Manager:
 
 ```bash
-# Eliminar secret de Runn (opcional)
-gcloud secrets delete RUNN_API_TOKEN --project=your-project
+# MANTENER el secret de Runn (necesario para Time Off)
+# NO ejecutar: gcloud secrets delete RUNN_API_TOKEN
 
 # Crear nuevo secret para Clockify API Key
 echo -n "your_clockify_api_key" | gcloud secrets create CLOCKIFY_API_KEY \
@@ -195,6 +206,7 @@ Actualiza las variables de entorno en tu servicio de Cloud Run:
 gcloud run services update runn-to-bigquery-sync \
   --update-secrets=CLOCKIFY_API_KEY=CLOCKIFY_API_KEY:latest \
   --update-secrets=CLOCKIFY_WORKSPACE_ID=CLOCKIFY_WORKSPACE_ID:latest \
+  --update-secrets=RUNN_API_TOKEN=RUNN_API_TOKEN:latest \
   --region=your-region \
   --project=your-project
 ```
@@ -205,6 +217,7 @@ O actualiza manualmente desde la consola de GCP:
 3. Variables & Secrets → Agregar:
    - `CLOCKIFY_API_KEY` (from secret)
    - `CLOCKIFY_WORKSPACE_ID` (from secret)
+   - `RUNN_API_TOKEN` (from secret) - **MANTENER ESTE**
 
 ## Validación Post-Migración
 

@@ -169,27 +169,97 @@ def test_bigquery_connection():
         return False
 
 
+def test_runn_connection():
+    """Prueba la conexión a Runn API (solo para Time Off)"""
+    import requests
+
+    api_token = os.getenv("RUNN_API_TOKEN")
+
+    print()
+    print("🔍 Validando configuración de Runn (Time Off)...")
+    print("-" * 50)
+
+    # Validar que existen las variables
+    if not api_token:
+        print("⚠️  ADVERTENCIA: RUNN_API_TOKEN no está configurada")
+        print("   Los endpoints de Time Off (leave, rostered) no funcionarán")
+        print("   Configúrala en .env si necesitas datos de Time Off")
+        return False
+
+    print(f"✅ RUNN_API_TOKEN: {'*' * 20}{api_token[-4:]}")
+    print()
+
+    # Test: Get some time off data
+    print("📡 Test: Obteniendo datos de Time Off...")
+    try:
+        # Try to fetch leave time-offs
+        response = requests.get(
+            "https://api.runn.io/time-offs/leave/",
+            headers={
+                "Authorization": f"Bearer {api_token}",
+                "Accept-Version": "1.0.0"
+            },
+            params={"limit": 5},
+            timeout=10
+        )
+
+        if response.status_code == 200:
+            data = response.json()
+            values = data.get("values", [])
+            print(f"✅ Time Off Leave: {len(values)} registros encontrados")
+        elif response.status_code == 401:
+            print("❌ ERROR: API Token inválido")
+            print("   Genera un nuevo token en Runn Settings → API")
+            return False
+        else:
+            print(f"⚠️  Respuesta: {response.status_code}")
+            print("   Puede que no haya datos de Time Off o el token tenga permisos limitados")
+
+    except Exception as e:
+        print(f"⚠️  ERROR al obtener datos: {e}")
+        return False
+
+    print("✅ Conexión a Runn exitosa")
+    return True
+
+
 if __name__ == "__main__":
     print()
     print("=" * 50)
-    print("  VALIDACIÓN DE CONEXIÓN - Clockify to BigQuery")
+    print("  VALIDACIÓN DE CONEXIÓN - Hybrid Sync")
+    print("  Clockify (main) + Runn (time off) → BigQuery")
     print("=" * 50)
     print()
 
     clockify_ok = test_clockify_connection()
+    runn_ok = test_runn_connection()
 
-    if clockify_ok:
+    if clockify_ok or runn_ok:
         bigquery_ok = test_bigquery_connection()
 
         if bigquery_ok:
             print()
-            print("🎉 TODO LISTO - Puedes ejecutar el sync completo!")
+            print("=" * 50)
+            if clockify_ok and runn_ok:
+                print("🎉 TODO LISTO - Puedes ejecutar el sync completo!")
+                print("   - Clockify: Users, Projects, Clients, Time Entries, etc.")
+                print("   - Runn: Time Off (leave, rostered)")
+            elif clockify_ok:
+                print("⚠️  PARCIALMENTE LISTO")
+                print("   ✅ Clockify funcionará")
+                print("   ❌ Time Off de Runn NO funcionará (falta RUNN_API_TOKEN)")
+            elif runn_ok:
+                print("⚠️  PARCIALMENTE LISTO")
+                print("   ❌ Clockify NO funcionará (falta credenciales)")
+                print("   ✅ Time Off de Runn funcionará")
+            print("=" * 50)
         else:
             print()
             print("⚠️  BigQuery no está configurado correctamente")
             print("   El sync fallará al intentar cargar datos")
     else:
         print()
-        print("❌ FALLO - Corrige los errores de Clockify antes de continuar")
+        print("❌ FALLO - Corrige los errores antes de continuar")
+        print("   Necesitas al menos Clockify O Runn configurado")
 
     print()

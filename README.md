@@ -1,14 +1,19 @@
-# Clockify to BigQuery Sync
+# Clockify + Runn to BigQuery Sync
 
-Servicio que sincroniza datos de Clockify a BigQuery, manteniendo compatibilidad con el esquema anterior de Runn.
+Servicio que sincroniza datos de Clockify y Runn a BigQuery, manteniendo compatibilidad total con el esquema de tablas existente.
 
 ## Descripción
 
-Este servicio extrae datos de Clockify vía su API REST y los carga en BigQuery, transformándolos para mantener compatibilidad con el esquema de tablas previo basado en Runn. Esto permite mantener dashboards y reportes de Power BI sin cambios.
+Este servicio utiliza un enfoque híbrido:
+- **Clockify API** para la mayoría de datos (users, projects, clients, time entries, etc.)
+- **Runn API** solo para Time Off data (leave, rostered) que no está disponible en Clockify
+
+Los datos se transforman para mantener compatibilidad con el esquema de tablas previo, permitiendo que dashboards y reportes de Power BI funcionen sin cambios.
 
 ## Características
 
-- ✅ Sincronización automática de múltiples endpoints de Clockify
+- ✅ Sincronización automática de múltiples endpoints de Clockify y Runn
+- ✅ Dual-source: Clockify como fuente principal + Runn para Time Off
 - ✅ Transformación de datos para compatibilidad con esquema BigQuery existente
 - ✅ Upsert incremental usando MERGE statements
 - ✅ Manejo automático de schema evolution
@@ -52,26 +57,28 @@ Este servicio extrae datos de Clockify vía su API REST y los carga en BigQuery,
 
 ## Tablas Sincronizadas
 
-| Tabla | Fuente Clockify | Estado |
-|-------|-----------------|--------|
-| `runn_people` | Users API | ✅ |
-| `runn_projects` | Projects API | ✅ |
-| `runn_clients` | Clients API | ✅ |
-| `runn_people_tags` | Tags API | ✅ |
-| `runn_project_tags` | Tags API | ✅ |
-| `runn_workstreams` | Tasks API | ⚠️ |
-| `runn_assignments` | Scheduling API | ✅ |
-| `runn_actuals` | Reports API | ✅ |
-| `runn_timeoffs_holidays` | Holidays API | ✅ |
+| Tabla | Fuente | API | Estado |
+|-------|--------|-----|--------|
+| `runn_people` | Clockify | Users API | ✅ |
+| `runn_projects` | Clockify | Projects API | ✅ |
+| `runn_clients` | Clockify | Clients API | ✅ |
+| `runn_people_tags` | Clockify | Tags API | ✅ |
+| `runn_project_tags` | Clockify | Tags API | ✅ |
+| `runn_workstreams` | Clockify | Tasks API | ⚠️ |
+| `runn_assignments` | Clockify | Scheduling API | ✅ |
+| `runn_actuals` | Clockify | Reports API | ✅ |
+| `runn_timeoffs_holidays` | Clockify | Holidays API | ✅ |
+| `runn_timeoffs_leave` | **Runn** | Time Offs API | ✅ |
+| `runn_timeoffs_rostered` | **Runn** | Time Offs API | ✅ |
 
-**Nota**: Algunas tablas del esquema anterior (roles, teams, skills, etc.) no tienen equivalente directo en Clockify y están deshabilitadas.
+**Nota**: Algunas tablas del esquema anterior (roles, teams, skills, etc.) no tienen equivalente directo y están deshabilitadas.
 
 ## Requisitos
 
 - Python 3.11+
 - Google Cloud Project con BigQuery habilitado
-- Clockify API Key
-- Clockify Workspace ID
+- Clockify API Key y Workspace ID
+- Runn API Token (para Time Off data)
 
 ## Instalación
 
@@ -112,14 +119,20 @@ Ver [MIGRATION_CLOCKIFY.md](./MIGRATION_CLOCKIFY.md) para instrucciones detallad
 ### Variables de Entorno
 
 ```bash
-# Requeridas
+# Requeridas - Clockify
 CLOCKIFY_API_KEY=your_api_key
 CLOCKIFY_WORKSPACE_ID=your_workspace_id
+
+# Requeridas - Runn (para Time Off)
+RUNN_API_TOKEN=your_runn_token
+
+# Requeridas - BigQuery
 BQ_PROJECT=your-gcp-project
 
 # Opcionales
 BQ_DATASET=people_analytics  # default
 CLOCKIFY_PAGE_SIZE=200  # default
+RUNN_LIMIT=200  # default
 PORT=8080  # para HTTP server
 ```
 
@@ -132,7 +145,7 @@ Ver [.env.example](./.env.example) para más detalles.
 2. Profile Settings → API tab
 3. Generate API Key
 
-**Workspace ID**:
+**Clockify Workspace ID**:
 1. Settings → Workspace Settings
 2. ID está en la URL: `https://app.clockify.me/workspaces/{ID}/settings`
 
@@ -141,6 +154,11 @@ O vía API:
 curl https://api.clockify.me/api/v1/workspaces \
   -H "X-Api-Key: YOUR_API_KEY"
 ```
+
+**Runn API Token**:
+1. Login en https://app.runn.io
+2. Settings → Integrations → API
+3. Generate new token
 
 ## Uso
 

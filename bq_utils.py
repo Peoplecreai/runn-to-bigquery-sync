@@ -4,6 +4,24 @@ from google.api_core.exceptions import NotFound
 def get_bq_client(project: str | None = None):
     return bigquery.Client(project=project)
 
+def truncate_table(client: bigquery.Client, table_id: str):
+    """
+    Trunca (borra todos los datos de) una tabla en BigQuery.
+    Útil para hacer un full sync limpiando duplicados.
+    """
+    try:
+        # Verificar que la tabla existe
+        client.get_table(table_id)
+        # Truncar la tabla
+        query = f"TRUNCATE TABLE `{table_id}`"
+        client.query(query).result()
+        print(f"Tabla {table_id} truncada exitosamente")
+    except NotFound:
+        print(f"Tabla {table_id} no existe, se creará durante el merge")
+    except Exception as e:
+        print(f"Error truncando tabla {table_id}: {e}")
+        raise
+
 def load_staging(client: bigquery.Client, table_id: str, rows: list[dict]):
     job_config = bigquery.LoadJobConfig(
         write_disposition=bigquery.WriteDisposition.WRITE_TRUNCATE,

@@ -37,12 +37,15 @@ def fetch_all_time_entries(start_date=None, end_date=None):
     """
     Obtiene todos los time entries del workspace de Clockify.
 
+    IMPORTANTE: Deduplica por Clockify ID para evitar que el mismo time entry
+    se procese múltiples veces si aparece en diferentes usuarios.
+
     Args:
         start_date: fecha inicio (opcional, por defecto últimos 90 días)
         end_date: fecha fin (opcional, por defecto hoy)
 
     Yields:
-        dict: time entry de Clockify
+        dict: time entry de Clockify (deduplicado)
     """
     if not WORKSPACE_ID:
         raise ValueError("CLOCKIFY_WORKSPACE_ID no está configurado")
@@ -61,6 +64,11 @@ def fetch_all_time_entries(start_date=None, end_date=None):
 
     # Primero obtener todos los usuarios del workspace
     users = fetch_all_users()
+
+    # Set para rastrear IDs ya vistos y evitar duplicados
+    seen_ids = set()
+    duplicate_count = 0
+    total_count = 0
 
     # Para cada usuario, obtener sus time entries
     for user in users:
@@ -83,6 +91,17 @@ def fetch_all_time_entries(start_date=None, end_date=None):
                 break
 
             for entry in data:
+                total_count += 1
+                entry_id = entry.get("id")
+
+                # Deduplicar: solo procesar si no lo hemos visto antes
+                if entry_id and entry_id in seen_ids:
+                    duplicate_count += 1
+                    continue  # Skip este entry duplicado
+
+                if entry_id:
+                    seen_ids.add(entry_id)
+
                 yield entry
 
             # Si devolvió menos de page_size, no hay más páginas
@@ -90,6 +109,16 @@ def fetch_all_time_entries(start_date=None, end_date=None):
                 break
 
             page += 1
+
+    # Reportar estadísticas de deduplicación
+    if duplicate_count > 0:
+        print(f"\n⚠️  DUPLICADOS DETECTADOS Y ELIMINADOS:")
+        print(f"   Total entries recibidos de Clockify API: {total_count}")
+        print(f"   Duplicados eliminados: {duplicate_count}")
+        print(f"   Entries únicos: {len(seen_ids)}")
+        print(f"   Ratio de duplicación: {total_count / len(seen_ids):.2f}x")
+        print(f"\n   Esto explica el problema de 2.6x en PowerBI!")
+        print(f"   Ahora solo se cargarán los entries únicos a BigQuery.\n")
 
 
 def fetch_all_users():

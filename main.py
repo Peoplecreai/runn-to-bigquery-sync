@@ -36,7 +36,7 @@ def sync_actuals_from_clockify(client, name):
     """Sincroniza actuals desde Clockify en lugar de Runn"""
     print(f"[{name}] Obteniendo time entries desde Clockify...")
 
-    # Obtener time entries de Clockify
+    # Obtener time entries de Clockify (ya deduplicados en clockify_client.py)
     time_entries = list(fetch_all_time_entries())
 
     if not time_entries:
@@ -47,6 +47,46 @@ def sync_actuals_from_clockify(client, name):
 
     # Transformar a formato de actuals de Runn
     rows = transform_batch(time_entries)
+
+    print(f"[{name}] {len(rows)} actuals transformados")
+
+    # SEGUNDA CAPA DE DEDUPLICACIÓN: Verificar que no haya IDs duplicados antes de cargar
+    # Esto protege contra colisiones de hash u otros problemas
+    ids_seen = {}
+    duplicates_found = []
+
+    for i, row in enumerate(rows):
+        row_id = row.get("id")
+        if row_id in ids_seen:
+            duplicates_found.append({
+                "id": row_id,
+                "first_index": ids_seen[row_id],
+                "duplicate_index": i,
+                "clockify_id_1": rows[ids_seen[row_id]].get("_clockify_id"),
+                "clockify_id_2": row.get("_clockify_id"),
+            })
+        else:
+            ids_seen[row_id] = i
+
+    if duplicates_found:
+        print(f"\n⚠️  ADVERTENCIA: Se encontraron {len(duplicates_found)} IDs numéricos duplicados después de transformar!")
+        print(f"   Esto indica colisiones de hash. Primeros 5 ejemplos:")
+        for dup in duplicates_found[:5]:
+            print(f"   - ID numérico {dup['id']}:")
+            print(f"     Clockify ID 1: {dup['clockify_id_1']}")
+            print(f"     Clockify ID 2: {dup['clockify_id_2']}")
+
+        # Deduplicar rows manteniendo solo la primera ocurrencia de cada ID
+        unique_rows = []
+        seen_ids_set = set()
+        for row in rows:
+            row_id = row.get("id")
+            if row_id not in seen_ids_set:
+                unique_rows.append(row)
+                seen_ids_set.add(row_id)
+
+        print(f"\n   Deduplicando: {len(rows)} → {len(unique_rows)} filas")
+        rows = unique_rows
 
     # Cargar a BigQuery con el mismo proceso
     stg_table = f"{PROJECT}.{DATASET}._stg__{name}"

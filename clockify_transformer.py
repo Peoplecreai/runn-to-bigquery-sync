@@ -4,6 +4,27 @@ Mantiene la misma estructura en BigQuery para no afectar Power BI
 """
 from datetime import datetime
 from typing import Dict, Any, List, Optional
+import hashlib
+
+
+def _generate_deterministic_id(string_id: str) -> int:
+    """
+    Genera un ID numérico determinístico a partir de un string ID.
+    Usa MD5 para garantizar que el mismo string siempre genere el mismo ID,
+    independientemente de reinicios del proceso o versión de Python.
+
+    Args:
+        string_id: El ID en formato string (ej: ID de Clockify)
+
+    Returns:
+        Un entero de hasta 10 dígitos generado de forma determinística
+    """
+    # MD5 es determinístico y genera el mismo hash siempre para el mismo input
+    hash_object = hashlib.md5(string_id.encode('utf-8'))
+    # Convertir a entero usando los primeros 8 bytes del hash
+    hash_int = int.from_bytes(hash_object.digest()[:8], byteorder='big')
+    # Limitar a 10 dígitos para que sea manejable en BigQuery
+    return hash_int % (10**10)
 
 
 def transform_time_entry_to_actual(
@@ -81,16 +102,18 @@ def transform_time_entry_to_actual(
     description = time_entry.get("description", "")
 
     # IDs: convertir de Clockify string IDs a integer IDs compatibles con Runn
-    # Usamos hash para generar IDs numéricos consistentes
+    # Usamos MD5 hash determinístico para generar IDs numéricos consistentes
+    # Esto garantiza que el mismo time entry siempre genere el mismo ID,
+    # evitando duplicados en BigQuery
     clockify_id = time_entry.get("id", "")
-    numeric_id = abs(hash(clockify_id)) % (10**10)  # ID numérico de 10 dígitos
+    numeric_id = _generate_deterministic_id(clockify_id) if clockify_id else 0
 
     user_id_str = time_entry.get("userId", "")
-    person_id = user_map.get(user_id_str) if user_map else abs(hash(user_id_str)) % (10**10)
+    person_id = user_map.get(user_id_str) if user_map else _generate_deterministic_id(user_id_str) if user_id_str else 0
 
     project_id_str = time_entry.get("projectId", "")
     project_id = project_map.get(project_id_str) if project_map else (
-        abs(hash(project_id_str)) % (10**10) if project_id_str else None
+        _generate_deterministic_id(project_id_str) if project_id_str else None
     )
 
     # Timestamps

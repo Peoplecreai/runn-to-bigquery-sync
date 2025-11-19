@@ -22,6 +22,78 @@ def truncate_table(client: bigquery.Client, table_id: str):
         print(f"Error truncando tabla {table_id}: {e}")
         raise
 
+def deduplicate_table_by_column(client: bigquery.Client, table_id: str, unique_col: str):
+    """
+    Elimina duplicados de una tabla en BigQuery manteniendo solo el registro más reciente.
+    Útil para limpiar duplicados históricos antes de hacer merge.
+
+    Args:
+        client: Cliente de BigQuery
+        table_id: ID completo de la tabla (ej: project.dataset.table)
+        unique_col: Columna que debe ser única (ej: '_clockify_id')
+    """
+    try:
+        # Verificar que la tabla existe
+        client.get_table(table_id)
+
+        # Contar duplicados antes de limpiar
+        count_query = f"""
+        SELECT
+            COUNT(*) as total_rows,
+            COUNT(DISTINCT {unique_col}) as unique_rows
+        FROM `{table_id}`
+        WHERE {unique_col} IS NOT NULL
+        """
+        result = list(client.query(count_query).result())
+        if result:
+            total_rows = result[0].total_rows
+            unique_rows = result[0].unique_rows
+            duplicates = total_rows - unique_rows
+
+            if duplicates > 0:
+                print(f"\n⚠️  Duplicados detectados en {table_id}:")
+                print(f"   Total rows: {total_rows}")
+                print(f"   Rows únicos: {unique_rows}")
+                print(f"   Duplicados a eliminar: {duplicates}")
+                print(f"   Factor de duplicación: {total_rows / unique_rows:.2f}x\n")
+
+                # Crear tabla temporal con datos deduplicados
+                temp_table = f"{table_id}_dedup_temp"
+                dedup_query = f"""
+                CREATE OR REPLACE TABLE `{temp_table}` AS
+                SELECT * FROM (
+                    SELECT *,
+                           ROW_NUMBER() OVER (PARTITION BY {unique_col} ORDER BY updatedAt DESC) as rn
+                    FROM `{table_id}`
+                    WHERE {unique_col} IS NOT NULL
+                )
+                WHERE rn = 1
+                """
+                client.query(dedup_query).result()
+                print(f"✓ Tabla temporal creada: {temp_table}")
+
+                # Reemplazar tabla original con la deduplicada
+                replace_query = f"""
+                CREATE OR REPLACE TABLE `{table_id}` AS
+                SELECT * EXCEPT(rn)
+                FROM `{temp_table}`
+                """
+                client.query(replace_query).result()
+                print(f"✓ Tabla {table_id} deduplicada exitosamente")
+
+                # Eliminar tabla temporal
+                client.delete_table(temp_table)
+                print(f"✓ Tabla temporal eliminada\n")
+                print(f"✅ Deduplicación completada: {total_rows} → {unique_rows} rows")
+            else:
+                print(f"✓ No se encontraron duplicados en {table_id}")
+
+    except NotFound:
+        print(f"Tabla {table_id} no existe aún, no hay duplicados que limpiar")
+    except Exception as e:
+        print(f"Error deduplicando tabla {table_id}: {e}")
+        raise
+
 def load_staging(client: bigquery.Client, table_id: str, rows: list[dict]):
     job_config = bigquery.LoadJobConfig(
         write_disposition=bigquery.WriteDisposition.WRITE_TRUNCATE,
@@ -47,12 +119,27 @@ def ensure_target_schema_matches_stg(client: bigquery.Client, stg_table: str, tg
 def build_merge_sql(project: str, dataset: str, name: str, id_col: str = "id"):
     stg = f"`{project}.{dataset}._stg__{name}`"
     tgt = f"`{project}.{dataset}.{name}`"
+
+    # Para claves que pueden ser NULL, necesitamos manejar el match de manera especial
+    # Usamos IS NOT DISTINCT FROM para que NULL = NULL sea verdadero
+    match_condition = f"T.{id_col} = S.{id_col}"
+    if id_col.startswith("_"):  # Campos adicionales como _clockify_id pueden ser NULL
+        match_condition = f"T.{id_col} IS NOT DISTINCT FROM S.{id_col} AND S.{id_col} IS NOT NULL"
+
     # Leer esquema desde INFORMATION_SCHEMA
     # Nota: evitamos castear arrays a string
     return f"""
 MERGE {tgt} T
-USING {stg} S
-ON T.{id_col} = S.{id_col}
+USING (
+  -- Deduplicar staging: si hay múltiples rows con el mismo id_col, tomar solo uno
+  SELECT * FROM (
+    SELECT *, ROW_NUMBER() OVER (PARTITION BY {id_col} ORDER BY updatedAt DESC) as rn
+    FROM {stg}
+    WHERE {id_col} IS NOT NULL
+  )
+  WHERE rn = 1
+) S
+ON {match_condition}
 WHEN MATCHED THEN UPDATE SET
   {', '.join([f'T.{col} = S.{col}' for col in _select_columns_sql(project, dataset, name, id_col)])}
 WHEN NOT MATCHED THEN INSERT ({', '.join(_select_columns_sql(project, dataset, name))})

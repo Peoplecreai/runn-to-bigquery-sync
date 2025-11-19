@@ -1,32 +1,15 @@
 import os, sys, yaml
-from clockify_client import fetch_all
-from data_mapper import transform_data
+from runn_client import fetch_all
 from bq_utils import get_bq_client, load_staging, ensure_target_schema_matches_stg, build_merge_sql
 
 PROJECT = os.getenv("BQ_PROJECT")
 DATASET = os.getenv("BQ_DATASET", "people_analytics")
 
-def sync_endpoint(client, name, path, use_reports=False):
-    """
-    Sync a single endpoint from Clockify to BigQuery.
-
-    Args:
-        client: BigQuery client
-        name: Endpoint name (e.g., "runn_people")
-        path: API path
-        use_reports: Whether to use Reports API (POST-based pagination)
-    """
-    # Fetch data from Clockify
-    raw_rows = list(fetch_all(path, use_reports_api=use_reports))
-
-    if not raw_rows:
+def sync_endpoint(client, name, path):
+    rows = list(fetch_all(path))
+    if not rows:
         print(f"[{name}] sin datos")
         return 0
-
-    # Transform data to Runn-compatible format
-    rows = [transform_data(name, row) for row in raw_rows]
-
-    # Load to BigQuery
     stg_table = f"{PROJECT}.{DATASET}._stg__{name}"
     tgt_table = f"{PROJECT}.{DATASET}.{name}"
     load_staging(client, stg_table, rows)
@@ -45,14 +28,7 @@ def run_sync():
     per_endpoint = {}
     total = 0
     for name, meta in endpoints.items():
-        # Skip disabled endpoints
-        if meta.get("disabled", False):
-            print(f"[{name}] deshabilitado, omitiendo")
-            per_endpoint[name] = 0
-            continue
-
-        use_reports = meta.get("use_reports", False)
-        processed = sync_endpoint(client, name, meta["path"], use_reports=use_reports)
+        processed = sync_endpoint(client, name, meta["path"])
         per_endpoint[name] = processed
         total += processed
     return {"total_rows": total, "per_endpoint": per_endpoint}

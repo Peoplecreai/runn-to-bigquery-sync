@@ -1,84 +1,38 @@
 dataset: people_analytics
 endpoints:
-  # Core entities - mapped to Clockify API
   runn_people:
-    path: /v1/workspaces/{workspaceId}/users
-    use_reports: false
+    path: /people/
   runn_projects:
-    path: /v1/workspaces/{workspaceId}/projects
-    use_reports: false
+    path: /projects/
   runn_clients:
-    path: /v1/workspaces/{workspaceId}/clients
-    use_reports: false
-
-  # Tags - Clockify uses single tags endpoint for both people and projects
+    path: /clients/
+  runn_roles:
+    path: /roles/
+  runn_teams:
+    path: /teams/
+  runn_skills:
+    path: /skills/
   runn_people_tags:
-    path: /v1/workspaces/{workspaceId}/tags
-    use_reports: false
+    path: /people-tags/
   runn_project_tags:
-    path: /v1/workspaces/{workspaceId}/tags
-    use_reports: false
-
-  # Workstreams -> Tasks in Clockify
+    path: /project-tags/
+  runn_rate_cards:
+    path: /rate-cards/
   runn_workstreams:
-    path: /v1/workspaces/{workspaceId}/projects/{projectId}/tasks
-    use_reports: false
-    # Note: This will need special handling to fetch tasks for all projects
-
-  # Assignments - Clockify Scheduling API
+    path: /workstreams/
   runn_assignments:
-    path: /v1/workspaces/{workspaceId}/scheduling/assignments
-    use_reports: false
-
-  # Actuals -> Time Entries in Clockify (via Reports API for better data)
+    path: /assignments/
   runn_actuals:
-    path: /v1/workspaces/{workspaceId}/reports/detailed
-    use_reports: true
-
-  # Time offs & Holidays
+    path: /actuals/
+  runn_timeoffs_leave:
+    path: /time-offs/leave/
+  runn_timeoffs_rostered:
+    path: /time-offs/rostered/
   runn_timeoffs_holidays:
-    path: /v1/workspaces/{workspaceId}/holidays
-    use_reports: false
-
-  # Currently not available in Clockify API - will be disabled
-  # These endpoints don't have direct equivalents in Clockify
-  # Uncomment if alternative solutions are found
-
-  # runn_roles:
-  #   path: /v1/workspaces/{workspaceId}/user-groups
-  #   use_reports: false
-  #   disabled: true
-
-  # runn_teams:
-  #   path: /v1/workspaces/{workspaceId}/user-groups
-  #   use_reports: false
-  #   disabled: true
-
-  # runn_skills:
-  #   disabled: true
-  #   # No equivalent in Clockify - would need custom fields
-
-  # runn_rate_cards:
-  #   disabled: true
-  #   # Rates are embedded in projects/tasks in Clockify
-
-  # runn_timeoffs_leave:
-  #   path: /v1/workspaces/{workspaceId}/time-off-requests
-  #   use_reports: false
-  #   disabled: true
-
-  # runn_timeoffs_rostered:
-  #   disabled: true
-  #   # No direct equivalent
-
-  # runn_holiday_groups:
-  #   disabled: true
-  #   # Holidays are flat in Clockify
-
-  # runn_placeholders:
-  #   disabled: true
-  #   # No equivalent in Clockify
-
-  # runn_contracts:
-  #   disabled: true
-  #   # No equivalent in Clockify
+    path: /time-offs/holidays/
+  runn_holiday_groups:
+    path: /holiday-groups/
+  runn_placeholders:
+    path: /placeholders/
+  runn_contracts:
+    path: /contracts/

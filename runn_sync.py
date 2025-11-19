@@ -11,7 +11,6 @@ from main import run_sync
 
 
 PORT = int(os.getenv("PORT", "8080"))
-# Service name updated to reflect Clockify integration
 
 
 def _array_element_expr(field_name: str, field: bigquery.SchemaField) -> str:
@@ -31,7 +30,7 @@ def _cast_expr(field_name: str, target: bigquery.SchemaField, source: bigquery.S
 
 
 class SyncRequestHandler(BaseHTTPRequestHandler):
-    server_version = "ClockifyToBQSync/1.0"
+    server_version = "RunnSyncHTTP/1.0"
 
     def log_message(self, format, *args):  # noqa: A003 - matches BaseHTTPRequestHandler signature
         logging.info("%s - - %s", self.address_string(), format % args)
@@ -49,7 +48,7 @@ class SyncRequestHandler(BaseHTTPRequestHandler):
         if parsed.path in {"/", ""}:
             self._write_response(
                 HTTPStatus.OK,
-                b"Clockify to BigQuery sync service",
+                b"Runn to BigQuery sync service",
                 content_type="text/plain; charset=utf-8",
             )
             return

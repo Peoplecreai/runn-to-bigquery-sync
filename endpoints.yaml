@@ -23,7 +23,8 @@ endpoints:
   runn_assignments:
     path: /assignments/
   runn_actuals:
-    path: /actuals/
+    source: clockify  # Ahora viene de Clockify en lugar de Runn
+    path: /actuals/   # No se usa, pero se mantiene por compatibilidad
   runn_timeoffs_leave:
     path: /time-offs/leave/
   runn_timeoffs_rostered:

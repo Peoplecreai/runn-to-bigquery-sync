@@ -2,7 +2,7 @@ import os, sys, yaml
 from runn_client import fetch_all
 from clockify_client import fetch_all_time_entries
 from clockify_transformer import transform_batch
-from bq_utils import get_bq_client, load_staging, ensure_target_schema_matches_stg, build_merge_sql, truncate_table
+from bq_utils import get_bq_client, load_staging, ensure_target_schema_matches_stg, build_merge_sql, truncate_table, deduplicate_table_by_column
 
 PROJECT = os.getenv("BQ_PROJECT")
 DATASET = os.getenv("BQ_DATASET", "people_analytics")
@@ -99,7 +99,15 @@ def sync_actuals_from_clockify(client, name):
 
     load_staging(client, stg_table, rows)
     ensure_target_schema_matches_stg(client, stg_table, tgt_table)
-    merge_sql = build_merge_sql(PROJECT, DATASET, name)
+
+    # Limpiar duplicados históricos en la tabla target ANTES del merge
+    # Esto corrige el problema de 2.6x causado por duplicados acumulados
+    print(f"[{name}] Verificando y eliminando duplicados históricos...")
+    deduplicate_table_by_column(client, tgt_table, "_clockify_id")
+
+    # Para Clockify, usar _clockify_id como clave única en lugar de id numérico
+    # Esto evita duplicados si hay colisiones de hash o problemas con IDs numéricos
+    merge_sql = build_merge_sql(PROJECT, DATASET, name, id_col="_clockify_id")
     client.query(merge_sql).result()
     sync_type = "full sync" if FULL_SYNC else "upsert"
     print(f"[{name}] {sync_type}: {len(rows)} filas desde Clockify")

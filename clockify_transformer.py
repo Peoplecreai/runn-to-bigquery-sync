@@ -31,6 +31,7 @@ def transform_time_entry_to_actual(
     time_entry: Dict[str, Any],
     user_map: Optional[Dict[str, int]] = None,
     project_map: Optional[Dict[str, int]] = None,
+    clockify_user_email_map: Optional[Dict[str, str]] = None,
 ) -> Dict[str, Any]:
     """
     Transforma un time entry de Clockify al formato de actual de Runn.
@@ -109,7 +110,14 @@ def transform_time_entry_to_actual(
     numeric_id = _generate_deterministic_id(clockify_id) if clockify_id else 0
 
     user_id_str = time_entry.get("userId", "")
+
+    # Intentar obtener el email del usuario para auditoría
+    user_email = clockify_user_email_map.get(user_id_str, "") if clockify_user_email_map else ""
+
+    # Intentar hacer match por user_map (que ahora mapea por email)
+    # Si no hay match, generar ID determinístico como fallback
     person_id = user_map.get(user_id_str) if user_map else _generate_deterministic_id(user_id_str) if user_id_str else 0
+    matched_by_email = (user_map and user_id_str in user_map) if user_map else False
 
     project_id_str = time_entry.get("projectId", "")
     project_id = project_map.get(project_id_str) if project_map else (
@@ -135,9 +143,11 @@ def transform_time_entry_to_actual(
         "workstreamId": None,  # Clockify no tiene workstreams
         "createdAt": created_at,
         "updatedAt": updated_at,
-        # Campos adicionales de Clockify para referencia
+        # Campos adicionales de Clockify para referencia y auditoría
         "_clockify_id": clockify_id,
         "_clockify_user_id": user_id_str,
+        "_clockify_user_email": user_email,  # Email del usuario para auditoría
+        "_clockify_matched_by_email": matched_by_email,  # Si el match fue por email
         "_clockify_project_id": project_id_str,
         "_clockify_task_id": time_entry.get("taskId"),
         "_clockify_tags": time_entry.get("tagIds", []),
@@ -180,10 +190,11 @@ def transform_batch(
     time_entries: List[Dict[str, Any]],
     user_map: Optional[Dict[str, int]] = None,
     project_map: Optional[Dict[str, int]] = None,
+    clockify_user_email_map: Optional[Dict[str, str]] = None,
 ) -> List[Dict[str, Any]]:
     """Transforma un batch de time entries a actuals"""
     return [
-        transform_time_entry_to_actual(entry, user_map, project_map)
+        transform_time_entry_to_actual(entry, user_map, project_map, clockify_user_email_map)
         for entry in time_entries
     ]
 
@@ -214,6 +225,58 @@ def build_project_map_from_runn(runn_projects: List[Dict[str, Any]]) -> Dict[str
         if name and project_id:
             project_map[name] = project_id
     return project_map
+
+
+def build_user_map_by_email(
+    clockify_user_email_map: Dict[str, str],
+    runn_people: List[Dict[str, Any]]
+) -> tuple[Dict[str, int], Dict[str, str]]:
+    """
+    Construye un mapeo de userId de Clockify a personId de Runn usando email como puente.
+
+    Args:
+        clockify_user_email_map: Mapeo de userId de Clockify → email
+        runn_people: Lista de personas de Runn con email e id
+
+    Returns:
+        tuple: (user_map, match_stats)
+            - user_map: Dict[clockify_userId, runn_personId]
+            - match_stats: Dict con estadísticas del match (matched, unmatched, etc.)
+    """
+    # Primero construir mapeo de email a personId de Runn
+    email_to_person_id = {}
+    for person in runn_people:
+        email = person.get("email", "").lower().strip()
+        person_id = person.get("id")
+        if email and person_id:
+            email_to_person_id[email] = person_id
+
+    # Ahora mapear userId de Clockify a personId de Runn usando email
+    user_map = {}
+    matched_emails = set()
+    unmatched_users = []
+
+    for clockify_user_id, email in clockify_user_email_map.items():
+        if email in email_to_person_id:
+            user_map[clockify_user_id] = email_to_person_id[email]
+            matched_emails.add(email)
+        else:
+            unmatched_users.append({
+                "clockify_user_id": clockify_user_id,
+                "email": email
+            })
+
+    # Estadísticas del match
+    match_stats = {
+        "total_clockify_users": len(clockify_user_email_map),
+        "total_runn_people": len(runn_people),
+        "matched": len(user_map),
+        "unmatched_clockify": len(unmatched_users),
+        "match_rate": f"{len(user_map) / len(clockify_user_email_map) * 100:.1f}%" if clockify_user_email_map else "0%",
+        "unmatched_users": unmatched_users
+    }
+
+    return user_map, match_stats
 
 
 if __name__ == "__main__":

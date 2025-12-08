@@ -1,7 +1,7 @@
 import os, sys, yaml
 from runn_client import fetch_all
-from clockify_client import fetch_all_time_entries
-from clockify_transformer import transform_batch
+from clockify_client import fetch_all_time_entries, build_user_email_map
+from clockify_transformer import transform_batch, build_user_map_by_email
 from bq_utils import get_bq_client, load_staging, ensure_target_schema_matches_stg, build_merge_sql, truncate_table, deduplicate_table_by_column
 
 PROJECT = os.getenv("BQ_PROJECT")
@@ -45,8 +45,38 @@ def sync_actuals_from_clockify(client, name):
 
     print(f"[{name}] {len(time_entries)} time entries obtenidos de Clockify")
 
-    # Transformar a formato de actuals de Runn
-    rows = transform_batch(time_entries)
+    # Obtener datos de Runn people para hacer match por email
+    print(f"[{name}] Obteniendo personas de Runn para mapeo por email...")
+    runn_people = list(fetch_all("/people/"))
+
+    # Construir mapeo de usuarios de Clockify (userId → email)
+    print(f"[{name}] Construyendo mapeo de usuarios de Clockify...")
+    clockify_user_email_map = build_user_email_map()
+
+    # Construir mapeo completo (userId de Clockify → personId de Runn) usando email
+    print(f"[{name}] Construyendo mapeo por email entre Clockify y Runn...")
+    user_map, match_stats = build_user_map_by_email(clockify_user_email_map, runn_people)
+
+    # Imprimir estadísticas del match
+    print(f"\n{'='*60}")
+    print(f"📊 ESTADÍSTICAS DE MATCH POR EMAIL:")
+    print(f"{'='*60}")
+    print(f"  Usuarios en Clockify: {match_stats['total_clockify_users']}")
+    print(f"  Personas en Runn: {match_stats['total_runn_people']}")
+    print(f"  Matches exitosos: {match_stats['matched']}")
+    print(f"  Sin match: {match_stats['unmatched_clockify']}")
+    print(f"  Tasa de match: {match_stats['match_rate']}")
+
+    if match_stats['unmatched_users']:
+        print(f"\n  ⚠️  Usuarios de Clockify sin match en Runn:")
+        for unmatched in match_stats['unmatched_users'][:5]:  # Mostrar solo los primeros 5
+            print(f"     - {unmatched['email']} (Clockify ID: {unmatched['clockify_user_id']})")
+        if len(match_stats['unmatched_users']) > 5:
+            print(f"     ... y {len(match_stats['unmatched_users']) - 5} más")
+    print(f"{'='*60}\n")
+
+    # Transformar a formato de actuals de Runn, usando el mapeo por email
+    rows = transform_batch(time_entries, user_map=user_map, clockify_user_email_map=clockify_user_email_map)
 
     print(f"[{name}] {len(rows)} actuals transformados")
 

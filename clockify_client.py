@@ -177,6 +177,28 @@ def fetch_all_projects():
     return all_projects
 
 
+def build_user_email_map():
+    """
+    Construye un mapeo de userId de Clockify a email.
+    Esto permite hacer match con los datos de Runn por email.
+
+    Returns:
+        dict: Mapeo de userId (string) a email (string en minúsculas)
+    """
+    users = fetch_all_users()
+    user_email_map = {}
+
+    for user in users:
+        user_id = user.get("id")
+        email = user.get("email", "").lower().strip()
+
+        if user_id and email:
+            user_email_map[user_id] = email
+
+    print(f"Mapeados {len(user_email_map)} usuarios de Clockify por email")
+    return user_email_map
+
+
 if __name__ == "__main__":
     # Test del cliente
     print("Testing Clockify client...")

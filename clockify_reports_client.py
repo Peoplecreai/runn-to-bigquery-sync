@@ -163,7 +163,7 @@ if __name__ == "__main__":
             print(json.dumps(entries[0], indent=2))
 
             # Análisis de campos billable
-            billable_count = sum(1 for e in entries if e.get("isBillable"))
+            billable_count = sum(1 for e in entries if e.get("billable"))
             non_billable_count = len(entries) - billable_count
 
             print(f"\n3. Análisis de billable status:")

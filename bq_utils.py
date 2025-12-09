@@ -71,13 +71,22 @@ def deduplicate_table_by_column(client: bigquery.Client, table_id: str, unique_c
                 print(f"   Duplicados a eliminar: {duplicates}")
                 print(f"   Factor de duplicación: {total_rows / unique_rows:.2f}x\n")
 
+                # Detectar qué columna de timestamp existe en la tabla
+                parts = table_id.split('.')
+                if len(parts) == 3:
+                    project, dataset, table_name = parts
+                    timestamp_col = _get_timestamp_column_from_table(client, table_id)
+                else:
+                    # Si no podemos parsear, usar updatedAt como fallback
+                    timestamp_col = 'updatedAt'
+
                 # Crear tabla temporal con datos deduplicados
                 temp_table = f"{table_id}_dedup_temp"
                 dedup_query = f"""
                 CREATE OR REPLACE TABLE `{temp_table}` AS
                 SELECT * FROM (
                     SELECT *,
-                           ROW_NUMBER() OVER (PARTITION BY {unique_col} ORDER BY updated_at DESC) as rn
+                           ROW_NUMBER() OVER (PARTITION BY {unique_col} ORDER BY {timestamp_col} DESC) as rn
                     FROM `{table_id}`
                     WHERE {unique_col} IS NOT NULL
                 )
@@ -140,6 +149,9 @@ def build_merge_sql(project: str, dataset: str, name: str, id_col: str = "id"):
     if id_col.startswith("_"):  # Campos adicionales como _clockify_id pueden ser NULL
         match_condition = f"T.{id_col} IS NOT DISTINCT FROM S.{id_col} AND S.{id_col} IS NOT NULL"
 
+    # Detectar qué columna de timestamp existe (updatedAt o updated_at)
+    timestamp_col = _get_timestamp_column(project, dataset, name)
+
     # Leer esquema desde INFORMATION_SCHEMA
     # Nota: evitamos castear arrays a string
     return f"""
@@ -147,7 +159,7 @@ MERGE {tgt} T
 USING (
   -- Deduplicar staging: si hay múltiples rows con el mismo id_col, tomar solo uno
   SELECT * FROM (
-    SELECT *, ROW_NUMBER() OVER (PARTITION BY {id_col} ORDER BY updated_at DESC) as rn
+    SELECT *, ROW_NUMBER() OVER (PARTITION BY {id_col} ORDER BY {timestamp_col} DESC) as rn
     FROM {stg}
     WHERE {id_col} IS NOT NULL
   )
@@ -172,3 +184,40 @@ ORDER BY ordinal_position
     if skip and skip in cols:
         cols.remove(skip)
     return cols
+
+def _get_timestamp_column(project: str, dataset: str, name: str) -> str:
+    """
+    Detecta qué columna de timestamp existe en la tabla staging.
+    Retorna 'updatedAt', 'updated_at', o 'id' como fallback.
+    """
+    cols = _select_columns_sql(project, dataset, name)
+
+    # Preferir updatedAt (camelCase de Runn)
+    if 'updatedAt' in cols:
+        return 'updatedAt'
+    # Fallback a updated_at (snake_case)
+    if 'updated_at' in cols:
+        return 'updated_at'
+    # Si no existe ninguna, usar id como fallback
+    return 'id'
+
+def _get_timestamp_column_from_table(client: bigquery.Client, table_id: str) -> str:
+    """
+    Detecta qué columna de timestamp existe en una tabla cualquiera (no necesariamente staging).
+    Retorna 'updatedAt', 'updated_at', o 'id' como fallback.
+    """
+    try:
+        table = client.get_table(table_id)
+        col_names = [field.name for field in table.schema]
+
+        # Preferir updatedAt (camelCase de Runn)
+        if 'updatedAt' in col_names:
+            return 'updatedAt'
+        # Fallback a updated_at (snake_case)
+        if 'updated_at' in col_names:
+            return 'updated_at'
+        # Si no existe ninguna, usar id como fallback
+        return 'id'
+    except Exception:
+        # Si hay algún error, usar updatedAt como fallback
+        return 'updatedAt'

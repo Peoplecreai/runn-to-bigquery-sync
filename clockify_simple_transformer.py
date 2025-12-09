@@ -30,7 +30,7 @@ def transform_clockify_entry(
       "projectName": "Proyecto X",
       "projectId": "5f9...",
       "clientName": "Cliente Y",
-      "isBillable": true,
+      "billable": true,
       "billableAmount": 150.00,
       "costAmount": 100.00,
       "timeInterval": {
@@ -74,7 +74,7 @@ def transform_clockify_entry(
     client_name = entry.get("clientName", "")
 
     # Información de facturación
-    is_billable = entry.get("isBillable", False)
+    is_billable = entry.get("billable", False)
     billable_amount = entry.get("billableAmount", 0.0)
     cost_amount = entry.get("costAmount", 0.0)
 
@@ -220,8 +220,8 @@ def analyze_report_data(entries: List[Dict[str, Any]]) -> Dict[str, Any]:
         return {"error": "No entries to analyze"}
 
     total_entries = len(entries)
-    billable_entries = [e for e in entries if e.get("isBillable")]
-    non_billable_entries = [e for e in entries if not e.get("isBillable")]
+    billable_entries = [e for e in entries if e.get("billable")]
+    non_billable_entries = [e for e in entries if not e.get("billable")]
 
     total_seconds = sum(e.get("timeInterval", {}).get("duration", 0) for e in entries)
     billable_seconds = sum(e.get("timeInterval", {}).get("duration", 0) for e in billable_entries)
@@ -277,7 +277,7 @@ if __name__ == "__main__":
         "projectId": "proj456",
         "clientName": "Cliente Beta",
         "clientId": "client789",
-        "isBillable": True,
+        "billable": True,
         "billableAmount": 150.00,
         "costAmount": 100.00,
         "timeInterval": {

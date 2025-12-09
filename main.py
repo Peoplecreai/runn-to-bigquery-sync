@@ -5,7 +5,9 @@ from clockify_transformer import transform_batch as transform_legacy_batch, buil
 from clockify_reports_client import fetch_detailed_report
 from clockify_simple_transformer import (
     transform_batch as transform_clockify_batch,
-    analyze_report_data
+    analyze_report_data,
+    build_user_map_by_email_from_runn,
+    build_project_map_by_name_from_runn
 )
 from bq_utils import get_bq_client, load_staging, ensure_target_schema_matches_stg, build_merge_sql, truncate_table, deduplicate_table_by_column
 
@@ -77,11 +79,37 @@ def sync_actuals_from_clockify(client, name):
         print(f"\n  ✓ No hay duplicados en el report")
     print(f"{'='*60}\n")
 
-    # Transformar a formato simple (sin mapeo con Runn)
-    print(f"\n[{name}] Transformando entries (manteniendo estructura de Clockify)...")
-    rows = transform_clockify_batch(report_entries)
+    # Obtener datos de Runn para mapeo (hilo conductor entre ambas fuentes)
+    print(f"[{name}] Obteniendo datos de Runn para crear referencias...")
+    runn_people = list(fetch_all("/people/"))
+    runn_projects = list(fetch_all("/projects/"))
+
+    # Construir mapeos: email → runn_person_id y project_name → runn_project_id
+    print(f"[{name}] Construyendo mapeos email → runn_person_id y project_name → runn_project_id...")
+    user_map = build_user_map_by_email_from_runn(runn_people)
+    project_map = build_project_map_by_name_from_runn(runn_projects)
+
+    print(f"  ✓ {len(user_map)} usuarios de Runn disponibles para mapeo")
+    print(f"  ✓ {len(project_map)} proyectos de Runn disponibles para mapeo")
+
+    # Transformar manteniendo estructura de Clockify + agregar referencias a Runn
+    print(f"\n[{name}] Transformando entries (estructura Clockify + referencias Runn)...")
+    rows = transform_clockify_batch(report_entries, user_map=user_map, project_map=project_map)
 
     print(f"[{name}] ✓ {len(rows)} registros transformados")
+
+    # Analizar matches exitosos
+    matched_people = sum(1 for r in rows if r.get("person_matched_by_email"))
+    matched_projects = sum(1 for r in rows if r.get("project_matched_by_name"))
+
+    print(f"\n[{name}] Resultados del mapeo con Runn:")
+    print(f"  Personas mapeadas: {matched_people}/{len(rows)} ({matched_people/len(rows)*100:.1f}%)")
+    print(f"  Proyectos mapeados: {matched_projects}/{len(rows)} ({matched_projects/len(rows)*100:.1f}%)")
+
+    if matched_people < len(rows):
+        print(f"  ⚠️  {len(rows) - matched_people} entries sin match de persona (email no encontrado en Runn)")
+    if matched_projects < len(rows):
+        print(f"  ⚠️  {len(rows) - matched_projects} entries sin match de proyecto (nombre no encontrado en Runn)")
 
     # Verificar duplicados por clockify_id
     ids_seen = {}

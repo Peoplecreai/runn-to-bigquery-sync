@@ -6,10 +6,19 @@ from datetime import datetime
 from typing import Dict, Any, List
 
 
-def transform_clockify_entry(entry: Dict[str, Any]) -> Dict[str, Any]:
+def transform_clockify_entry(
+    entry: Dict[str, Any],
+    user_map: Dict[str, int] = None,
+    project_map: Dict[str, int] = None
+) -> Dict[str, Any]:
     """
     Transforma un entry del Clockify Detailed Report manteniendo su estructura original.
-    Solo hace conversiones básicas para BigQuery.
+    Agrega referencias a IDs de Runn para poder hacer JOINs en BigQuery.
+
+    Args:
+        entry: Entry del Clockify Detailed Report
+        user_map: Mapeo de email → runn_person_id (opcional)
+        project_map: Mapeo de project_name → runn_project_id (opcional)
 
     Estructura del Detailed Report entry (ejemplo):
     {
@@ -74,9 +83,24 @@ def transform_clockify_entry(entry: Dict[str, Any]) -> Dict[str, Any]:
     tags = entry.get("tags", [])
     tag_names = [tag.get("name", "") for tag in tags] if tags else []
 
+    # Mapeo con IDs de Runn (para poder hacer JOINs en BigQuery)
+    runn_person_id = None
+    person_matched_by_email = False
+
+    if user_map and user_email:
+        runn_person_id = user_map.get(user_email)
+        person_matched_by_email = runn_person_id is not None
+
+    runn_project_id = None
+    project_matched_by_name = False
+
+    if project_map and project_name:
+        runn_project_id = project_map.get(project_name)
+        project_matched_by_name = runn_project_id is not None
+
     # Construir el registro para BigQuery
     record = {
-        # Identificadores
+        # Identificadores de Clockify
         "clockify_id": clockify_id,
         "user_id": user_id,
         "project_id": project_id,
@@ -111,6 +135,12 @@ def transform_clockify_entry(entry: Dict[str, Any]) -> Dict[str, Any]:
         "task_id": entry.get("taskId", ""),
         "task_name": entry.get("taskName", ""),
 
+        # Referencias a Runn (para JOINs en BigQuery)
+        "runn_person_id": runn_person_id,
+        "runn_project_id": runn_project_id,
+        "person_matched_by_email": person_matched_by_email,
+        "project_matched_by_name": project_matched_by_name,
+
         # Timestamps
         "created_at": start_str or datetime.utcnow().isoformat() + "Z",
         "updated_at": end_str or start_str or datetime.utcnow().isoformat() + "Z",
@@ -119,9 +149,66 @@ def transform_clockify_entry(entry: Dict[str, Any]) -> Dict[str, Any]:
     return record
 
 
-def transform_batch(entries: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
-    """Transforma un batch de entries del detailed report"""
-    return [transform_clockify_entry(entry) for entry in entries]
+def transform_batch(
+    entries: List[Dict[str, Any]],
+    user_map: Dict[str, int] = None,
+    project_map: Dict[str, int] = None
+) -> List[Dict[str, Any]]:
+    """
+    Transforma un batch de entries del detailed report.
+
+    Args:
+        entries: Lista de entries de Clockify
+        user_map: Mapeo de email → runn_person_id (opcional)
+        project_map: Mapeo de project_name → runn_project_id (opcional)
+    """
+    return [
+        transform_clockify_entry(entry, user_map, project_map)
+        for entry in entries
+    ]
+
+
+def build_user_map_by_email_from_runn(
+    runn_people: List[Dict[str, Any]]
+) -> Dict[str, int]:
+    """
+    Construye un mapeo de email a personId usando los datos de Runn.
+    Esto permite hacer match entre usuarios de Clockify (por email) y Runn.
+
+    Args:
+        runn_people: Lista de personas de Runn
+
+    Returns:
+        Dict[email, personId]: Mapeo de email a personId de Runn
+    """
+    user_map = {}
+    for person in runn_people:
+        email = person.get("email", "").lower().strip()
+        person_id = person.get("id")
+        if email and person_id:
+            user_map[email] = person_id
+    return user_map
+
+
+def build_project_map_by_name_from_runn(
+    runn_projects: List[Dict[str, Any]]
+) -> Dict[str, int]:
+    """
+    Construye un mapeo de nombre de proyecto a projectId usando los datos de Runn.
+
+    Args:
+        runn_projects: Lista de proyectos de Runn
+
+    Returns:
+        Dict[projectName, projectId]: Mapeo de nombre a projectId de Runn
+    """
+    project_map = {}
+    for project in runn_projects:
+        name = project.get("name", "").strip()
+        project_id = project.get("id")
+        if name and project_id:
+            project_map[name] = project_id
+    return project_map
 
 
 def analyze_report_data(entries: List[Dict[str, Any]]) -> Dict[str, Any]:

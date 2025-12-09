@@ -1,15 +1,21 @@
 import os, sys, yaml
-from runn_client import fetch_all
-from clockify_client import fetch_all_time_entries, build_user_email_map
-from clockify_transformer import transform_batch as transform_legacy_batch, build_user_map_by_email
+
+from bq_utils import (
+    build_merge_sql,
+    deduplicate_table_by_column,
+    ensure_target_schema_matches_stg,
+    get_bq_client,
+    load_staging,
+    truncate_table,
+)
 from clockify_reports_client import fetch_detailed_report
 from clockify_simple_transformer import (
-    transform_batch as transform_clockify_batch,
     analyze_report_data,
+    build_project_map_by_name_from_runn,
     build_user_map_by_email_from_runn,
-    build_project_map_by_name_from_runn
+    transform_batch as transform_clockify_batch,
 )
-from bq_utils import get_bq_client, load_staging, ensure_target_schema_matches_stg, build_merge_sql, truncate_table, deduplicate_table_by_column
+from runn_client import fetch_all
 
 PROJECT = os.getenv("BQ_PROJECT")
 DATASET = os.getenv("BQ_DATASET", "people_analytics")

@@ -8,7 +8,7 @@ Los datos de Clockify **NO se están cargando a BigQuery** porque las variables 
 
 **Tablas en BigQuery:**
 - ✅ Tablas de Runn (people, projects, clients, etc.) - **Funcionando correctamente**
-- ✅ `runn_actuals` - **Tabla antigua, ya no se actualiza**
+- 🗑️ `runn_actuals` - **Tabla legacy que ahora se elimina automáticamente**
 - ❌ `clockify_time_entries` - **NO EXISTE porque faltan las credenciales de Clockify**
 
 ## 🔧 Causa Raíz
@@ -95,7 +95,7 @@ export RUNN_API_TOKEN=<tu-token-runn>
 python main.py
 ```
 
-### Paso 4: Verificar que se Creó la Tabla
+### Paso 4: Verificar que se Creó la Tabla y que la Legacy Desapareció
 
 Después de la sincronización, verificar en BigQuery que se creó la tabla:
 
@@ -108,6 +108,11 @@ FROM `<tu-proyecto>.people_analytics.clockify_time_entries`;
 SELECT *
 FROM `<tu-proyecto>.people_analytics.clockify_time_entries`
 LIMIT 10;
+
+-- Confirmar que la tabla legacy ya no está
+SELECT table_name
+FROM `<tu-proyecto>.people_analytics.INFORMATION_SCHEMA.TABLES`
+WHERE table_name = 'runn_actuals';
 ```
 
 ## 📋 Checklist de Verificación
@@ -118,18 +123,7 @@ LIMIT 10;
 - [ ] Ejecutar la sincronización manualmente
 - [ ] Verificar que se creó la tabla `clockify_time_entries` en BigQuery
 - [ ] Verificar que la tabla tiene datos (COUNT(*) > 0)
-- [ ] (Opcional) Borrar la tabla antigua `runn_actuals` si ya no se usa
-
-## 🗑️ Limpieza de la Tabla Antigua `runn_actuals`
-
-Una vez que confirmes que `clockify_time_entries` está funcionando correctamente, puedes borrar la tabla antigua:
-
-```sql
--- ADVERTENCIA: Esto borrará permanentemente la tabla runn_actuals
-DROP TABLE `<tu-proyecto>.people_analytics.runn_actuals`;
-```
-
-**IMPORTANTE:** Solo hacer esto después de confirmar que `clockify_time_entries` tiene todos los datos necesarios y que tus reportes/dashboards están usando la tabla nueva.
+- [ ] Confirmar que `runn_actuals` ya no existe (se elimina automáticamente al inicio del proceso)
 
 ## 📊 Diferencias entre `runn_actuals` y `clockify_time_entries`
 

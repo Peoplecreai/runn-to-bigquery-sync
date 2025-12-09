@@ -22,6 +22,20 @@ def truncate_table(client: bigquery.Client, table_id: str):
         print(f"Error truncando tabla {table_id}: {e}")
         raise
 
+
+def drop_table_if_exists(client: bigquery.Client, table_id: str):
+    """Elimina una tabla si existe (ignora si no existe)."""
+
+    try:
+        client.delete_table(table_id)
+        print(f"Tabla {table_id} eliminada (legacy)")
+    except NotFound:
+        # No hacer nada si ya no existe
+        pass
+    except Exception as exc:  # pragma: no cover - defensivo
+        print(f"Error eliminando {table_id}: {exc}")
+        raise
+
 def deduplicate_table_by_column(client: bigquery.Client, table_id: str, unique_col: str):
     """
     Elimina duplicados de una tabla en BigQuery manteniendo solo el registro más reciente.

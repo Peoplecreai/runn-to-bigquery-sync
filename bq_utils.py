@@ -77,7 +77,7 @@ def deduplicate_table_by_column(client: bigquery.Client, table_id: str, unique_c
                 CREATE OR REPLACE TABLE `{temp_table}` AS
                 SELECT * FROM (
                     SELECT *,
-                           ROW_NUMBER() OVER (PARTITION BY {unique_col} ORDER BY updated_at DESC) as rn
+                           ROW_NUMBER() OVER (PARTITION BY {unique_col} ORDER BY updatedAt DESC) as rn
                     FROM `{table_id}`
                     WHERE {unique_col} IS NOT NULL
                 )
@@ -147,7 +147,7 @@ MERGE {tgt} T
 USING (
   -- Deduplicar staging: si hay múltiples rows con el mismo id_col, tomar solo uno
   SELECT * FROM (
-    SELECT *, ROW_NUMBER() OVER (PARTITION BY {id_col} ORDER BY updated_at DESC) as rn
+    SELECT *, ROW_NUMBER() OVER (PARTITION BY {id_col} ORDER BY updatedAt DESC) as rn
     FROM {stg}
     WHERE {id_col} IS NOT NULL
   )

@@ -22,20 +22,16 @@ RUNN_LIMIT=200
 ## Configuración de Clockify (para actuals/time entries)
 
 ```bash
-# URL base de la API de Clockify
-CLOCKIFY_BASE_URL=https://api.clockify.me/api/v1
+# URL base del Clockify Reports API
+CLOCKIFY_REPORTS_BASE_URL=https://reports.api.clockify.me/v1
 
 # API Key de Clockify
 # Obtenerla en: https://app.clockify.me/user/settings (Personal settings > API)
 CLOCKIFY_API_KEY=<tu-api-key-de-clockify>
 
 # ID del Workspace de Clockify
-# Puedes obtenerlo llamando a: GET https://api.clockify.me/api/v1/workspaces
-# O desde la URL cuando estás en Clockify: https://app.clockify.me/workspaces/<WORKSPACE_ID>/...
+# Puedes obtenerlo desde la URL: https://app.clockify.me/workspaces/<WORKSPACE_ID>/...
 CLOCKIFY_WORKSPACE_ID=<tu-workspace-id>
-
-# Tamaño de página para requests de Clockify
-CLOCKIFY_PAGE_SIZE=200
 ```
 
 ## Configuración de BigQuery
@@ -56,6 +52,10 @@ PORT=8080
 
 # Archivo de configuración de endpoints
 ENDPOINTS_FILE=endpoints.yaml
+
+# Variable para hacer full sync (borrar y recargar todo)
+# Solo usar cuando sea necesario para limpiar duplicados
+FULL_SYNC=false
 ```
 
 ## Autenticación con Google Cloud
@@ -91,11 +91,10 @@ RUNN_API_TOKEN=runn_abc123...
 RUNN_ACCEPT_VERSION=1.0.0
 RUNN_LIMIT=200
 
-# Clockify
-CLOCKIFY_BASE_URL=https://api.clockify.me/api/v1
+# Clockify Reports API
+CLOCKIFY_REPORTS_BASE_URL=https://reports.api.clockify.me/v1
 CLOCKIFY_API_KEY=NWY5YTFiMm...
 CLOCKIFY_WORKSPACE_ID=5f9a1b2c3d4e5f6g
-CLOCKIFY_PAGE_SIZE=200
 
 # BigQuery
 BQ_PROJECT=mi-proyecto-gcp
@@ -104,6 +103,7 @@ BQ_DATASET=people_analytics
 # Server
 PORT=8080
 ENDPOINTS_FILE=endpoints.yaml
+FULL_SYNC=false
 ```
 
 ## Notas Importantes

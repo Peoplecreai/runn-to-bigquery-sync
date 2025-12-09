@@ -1,13 +1,13 @@
 import os, sys, yaml
 from runn_client import fetch_all
 from clockify_client import fetch_all_time_entries, build_user_email_map
-from clockify_transformer import transform_batch, build_user_map_by_email
+from clockify_transformer import transform_batch as transform_legacy_batch, build_user_map_by_email
 from clockify_reports_client import fetch_detailed_report
-from clockify_reports_transformer import (
-    transform_batch as transform_report_batch,
+from clockify_simple_transformer import (
+    transform_batch as transform_clockify_batch,
+    analyze_report_data,
     build_user_map_by_email_from_runn,
-    build_project_map_by_name_from_runn,
-    analyze_report_data
+    build_project_map_by_name_from_runn
 )
 from bq_utils import get_bq_client, load_staging, ensure_target_schema_matches_stg, build_merge_sql, truncate_table, deduplicate_table_by_column
 
@@ -41,17 +41,12 @@ def sync_endpoint(client, name, path):
 
 def sync_actuals_from_clockify(client, name):
     """
-    Sincroniza actuals desde Clockify usando el Reports API (más confiable).
+    Sincroniza datos de time entries desde Clockify usando el Reports API.
 
-    El Reports API de Clockify es la fuente de verdad para datos billable/non-billable
-    porque:
-    - Incluye el campo isBillable de forma consistente
-    - Proporciona billableAmount y costAmount calculados
-    - Tiene mejor paginación y menos duplicados
-    - Es el mismo API que usa la UI de Clockify para reportes
+    Los datos se envían tal como vienen de Clockify, sin transformaciones
+    para mapear con Runn. Las transformaciones se realizarán en BigQuery.
     """
     print(f"[{name}] Obteniendo datos desde Clockify Reports API...")
-    print(f"[{name}] (Usando Detailed Report - fuente más confiable para billable/non-billable)")
 
     # Obtener detailed report de Clockify
     report_entries = fetch_detailed_report()
@@ -84,50 +79,61 @@ def sync_actuals_from_clockify(client, name):
         print(f"\n  ✓ No hay duplicados en el report")
     print(f"{'='*60}\n")
 
-    # Obtener datos de Runn para mapeo
-    print(f"[{name}] Obteniendo datos de Runn para mapeo...")
+    # Obtener datos de Runn para mapeo (hilo conductor entre ambas fuentes)
+    print(f"[{name}] Obteniendo datos de Runn para crear referencias...")
     runn_people = list(fetch_all("/people/"))
     runn_projects = list(fetch_all("/projects/"))
 
-    # Construir mapeos
-    print(f"[{name}] Construyendo mapeos email → personId y projectName → projectId...")
+    # Construir mapeos: email → runn_person_id y project_name → runn_project_id
+    print(f"[{name}] Construyendo mapeos email → runn_person_id y project_name → runn_project_id...")
     user_map = build_user_map_by_email_from_runn(runn_people)
     project_map = build_project_map_by_name_from_runn(runn_projects)
 
-    print(f"  ✓ {len(user_map)} usuarios mapeados por email")
-    print(f"  ✓ {len(project_map)} proyectos mapeados por nombre")
+    print(f"  ✓ {len(user_map)} usuarios de Runn disponibles para mapeo")
+    print(f"  ✓ {len(project_map)} proyectos de Runn disponibles para mapeo")
 
-    # Transformar a formato de actuals de Runn
-    print(f"\n[{name}] Transformando entries a formato runn_actuals...")
-    rows = transform_report_batch(report_entries, user_map=user_map, project_map=project_map)
+    # Transformar manteniendo estructura de Clockify + agregar referencias a Runn
+    print(f"\n[{name}] Transformando entries (estructura Clockify + referencias Runn)...")
+    rows = transform_clockify_batch(report_entries, user_map=user_map, project_map=project_map)
 
-    print(f"[{name}] ✓ {len(rows)} actuals transformados")
+    print(f"[{name}] ✓ {len(rows)} registros transformados")
 
-    # Verificar que no haya IDs duplicados (safety check)
+    # Analizar matches exitosos
+    matched_people = sum(1 for r in rows if r.get("person_matched_by_email"))
+    matched_projects = sum(1 for r in rows if r.get("project_matched_by_name"))
+
+    print(f"\n[{name}] Resultados del mapeo con Runn:")
+    print(f"  Personas mapeadas: {matched_people}/{len(rows)} ({matched_people/len(rows)*100:.1f}%)")
+    print(f"  Proyectos mapeados: {matched_projects}/{len(rows)} ({matched_projects/len(rows)*100:.1f}%)")
+
+    if matched_people < len(rows):
+        print(f"  ⚠️  {len(rows) - matched_people} entries sin match de persona (email no encontrado en Runn)")
+    if matched_projects < len(rows):
+        print(f"  ⚠️  {len(rows) - matched_projects} entries sin match de proyecto (nombre no encontrado en Runn)")
+
+    # Verificar duplicados por clockify_id
     ids_seen = {}
     duplicates_found = []
 
     for i, row in enumerate(rows):
-        row_id = row.get("id")
+        row_id = row.get("clockify_id")
         if row_id in ids_seen:
             duplicates_found.append({
-                "id": row_id,
+                "clockify_id": row_id,
                 "first_index": ids_seen[row_id],
                 "duplicate_index": i,
-                "clockify_id_1": rows[ids_seen[row_id]].get("_clockify_id"),
-                "clockify_id_2": row.get("_clockify_id"),
             })
         else:
             ids_seen[row_id] = i
 
     if duplicates_found:
-        print(f"\n⚠️  ADVERTENCIA: {len(duplicates_found)} IDs numéricos duplicados (colisión de hash)")
+        print(f"\n⚠️  ADVERTENCIA: {len(duplicates_found)} IDs duplicados")
 
         # Deduplicar rows manteniendo solo la primera ocurrencia
         unique_rows = []
         seen_ids_set = set()
         for row in rows:
-            row_id = row.get("id")
+            row_id = row.get("clockify_id")
             if row_id not in seen_ids_set:
                 unique_rows.append(row)
                 seen_ids_set.add(row_id)
@@ -136,19 +142,19 @@ def sync_actuals_from_clockify(client, name):
         rows = unique_rows
 
     # Validar datos antes de cargar
-    billable_mins = sum(r["billableMinutes"] for r in rows)
-    nonbillable_mins = sum(r["nonbillableMinutes"] for r in rows)
-    total_mins = billable_mins + nonbillable_mins
+    total_hours = sum(r["duration_hours"] for r in rows)
+    billable_hours = sum(r["duration_hours"] for r in rows if r.get("is_billable"))
+    nonbillable_hours = total_hours - billable_hours
 
     print(f"\n[{name}] Validación final antes de cargar a BigQuery:")
-    print(f"  Billable minutes: {billable_mins:,} ({billable_mins/60:.2f}h)")
-    print(f"  Non-billable minutes: {nonbillable_mins:,} ({nonbillable_mins/60:.2f}h)")
-    print(f"  Total minutes: {total_mins:,} ({total_mins/60:.2f}h)")
+    print(f"  Total horas: {total_hours:.2f}h")
+    print(f"  Billable horas: {billable_hours:.2f}h")
+    print(f"  Non-billable horas: {nonbillable_hours:.2f}h")
 
-    if abs((total_mins/60) - stats['total_hours']) > 0.1:
+    if abs(total_hours - stats['total_hours']) > 0.1:
         print(f"\n  ⚠️  ADVERTENCIA: Discrepancia en horas totales!")
         print(f"     Report API: {stats['total_hours']:.2f}h")
-        print(f"     Transformado: {total_mins/60:.2f}h")
+        print(f"     Transformado: {total_hours:.2f}h")
 
     # Cargar a BigQuery
     stg_table = f"{PROJECT}.{DATASET}._stg__{name}"
@@ -165,16 +171,16 @@ def sync_actuals_from_clockify(client, name):
 
     # Limpiar duplicados históricos ANTES del merge
     print(f"[{name}] Eliminando duplicados históricos...")
-    deduplicate_table_by_column(client, tgt_table, "_clockify_id")
+    deduplicate_table_by_column(client, tgt_table, "clockify_id")
 
-    # Merge usando _clockify_id como clave única
+    # Merge usando clockify_id como clave única
     print(f"[{name}] Ejecutando merge a tabla final...")
-    merge_sql = build_merge_sql(PROJECT, DATASET, name, id_col="_clockify_id")
+    merge_sql = build_merge_sql(PROJECT, DATASET, name, id_col="clockify_id")
     client.query(merge_sql).result()
 
     sync_type = "full sync" if FULL_SYNC else "upsert"
     print(f"\n[{name}] ✅ {sync_type} completado: {len(rows)} filas desde Clockify Reports API")
-    print(f"[{name}] Billable: {billable_mins/60:.2f}h | Non-billable: {nonbillable_mins/60:.2f}h\n")
+    print(f"[{name}] Total: {total_hours:.2f}h | Billable: {billable_hours:.2f}h | Non-billable: {nonbillable_hours:.2f}h\n")
 
     return len(rows)
 

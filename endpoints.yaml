@@ -28,7 +28,7 @@ endpoints:
   runn_timeoffs_leave:
     path: /time-offs/leave/
   runn_timeoffs_rostered:
-    path: /time-offs/rostered/
+    path: /time-offs/rostered-off/
   runn_timeoffs_holidays:
     path: /time-offs/holidays/
   runn_holiday_groups:

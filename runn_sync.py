@@ -1,3 +1,5 @@
+"""Servidor HTTP ligero para disparar la sincronización hacia BigQuery."""
+
 import json
 import logging
 import os

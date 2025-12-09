@@ -3,6 +3,7 @@ import os, sys, yaml
 from bq_utils import (
     build_merge_sql,
     deduplicate_table_by_column,
+    drop_table_if_exists,
     ensure_target_schema_matches_stg,
     get_bq_client,
     load_staging,
@@ -22,6 +23,7 @@ DATASET = os.getenv("BQ_DATASET", "people_analytics")
 # Variable de entorno para hacer full sync (borrar todo y recargar)
 # Usar: FULL_SYNC=true para limpiar duplicados
 FULL_SYNC = os.getenv("FULL_SYNC", "false").lower() in ("true", "1", "yes")
+DEPRECATED_ENDPOINTS = {"runn_actuals"}
 
 def sync_endpoint(client, name, path):
     """Sincroniza un endpoint de Runn"""
@@ -196,9 +198,22 @@ def run_sync():
         cfg = yaml.safe_load(f)
     endpoints = cfg["endpoints"]
     client = get_bq_client(PROJECT)
+
+    # Limpieza proactiva de tablas legacy
+    for deprecated in DEPRECATED_ENDPOINTS:
+        legacy_table = f"{PROJECT}.{DATASET}.{deprecated}"
+        legacy_stg = f"{PROJECT}.{DATASET}._stg__{deprecated}"
+        drop_table_if_exists(client, legacy_table)
+        drop_table_if_exists(client, legacy_stg)
+
     per_endpoint = {}
     total = 0
     for name, meta in endpoints.items():
+        if name in DEPRECATED_ENDPOINTS:
+            print(f"[{name}] Saltando endpoint legacy (removido)")
+            per_endpoint[name] = 0
+            continue
+
         # Verificar si este endpoint usa Clockify
         source = meta.get("source", "runn")
 

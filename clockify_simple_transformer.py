@@ -142,8 +142,8 @@ def transform_clockify_entry(
         "project_matched_by_name": project_matched_by_name,
 
         # Timestamps
-        "createdAt": start_str or datetime.utcnow().isoformat() + "Z",
-        "updatedAt": end_str or start_str or datetime.utcnow().isoformat() + "Z",
+        "created_at": start_str or datetime.utcnow().isoformat() + "Z",
+        "updated_at": end_str or start_str or datetime.utcnow().isoformat() + "Z",
     }
 
     return record
